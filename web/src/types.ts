@@ -2,6 +2,7 @@ export interface GroupInfo {
   name: string;
   folder: string;
   added_at: string;
+  runtime?: 'claude' | 'codex';
   kind?: 'home' | 'main' | 'feishu' | 'web';
   is_home?: boolean;
   is_my_home?: boolean;

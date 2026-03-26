@@ -102,6 +102,15 @@ export function SystemInfo({ status }: SystemInfoProps) {
 
         )}
 
+        {status.codexVersion !== undefined && (
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-slate-500">Codex CLI</span>
+            <span className="text-foreground font-medium font-mono text-xs">
+              {status.codexVersion || '未知'}
+            </span>
+          </div>
+        )}
+
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">飞书连接</span>
           <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-success-bg text-success">

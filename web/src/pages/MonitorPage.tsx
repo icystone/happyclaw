@@ -139,7 +139,7 @@ export function MonitorPage() {
                       <AlertTriangle className="w-4 h-4 text-error" />
                     )}
                     <span className={`text-sm font-medium ${buildResult.success ? 'text-success' : 'text-error'}`}>
-                      {buildResult.success ? '构建成功（已使用最新 Claude Code SDK/CLI）' : '构建失败'}
+                      {buildResult.success ? '构建成功（Docker 运行时已更新）' : '构建失败'}
                     </span>
                   </div>
                   {buildResult.error && (
@@ -183,6 +183,9 @@ export function MonitorPage() {
                           群组
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+                          Runtime
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                           队列
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
@@ -198,6 +201,11 @@ export function MonitorPage() {
                         <tr key={group.jid} className="hover:bg-muted/50">
                           <td className="px-4 py-3 text-sm font-medium text-foreground">
                             {group.jid}
+                          </td>
+                          <td className="px-4 py-3 text-sm">
+                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${group.runtime === 'codex' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                              {group.runtime === 'codex' ? 'Codex' : 'Claude'}
+                            </span>
                           </td>
                           <td className="px-4 py-3 text-sm text-muted-foreground">
                             {group.pendingTasks} 个任务 / {group.pendingMessages ? '有新消息' : '无新消息'}
