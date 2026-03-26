@@ -109,6 +109,7 @@ export const MessageCreateSchema = z
 
 export const GroupCreateSchema = z.object({
   name: z.string().min(1).max(MAX_GROUP_NAME_LEN),
+  runtime: z.enum(['claude', 'codex']).optional(),
   execution_mode: z.enum(['container', 'host']).optional(),
   custom_cwd: z
     .string()
@@ -141,6 +142,23 @@ export const ClaudeConfigSchema = z.object({
   anthropicBaseUrl: z.string(),
   anthropicModel: z.string().max(128).optional(),
 });
+
+export const CodexConfigSchema = z.object({
+  baseUrl: z.string().max(2000).optional(),
+  model: z.string().max(128).optional(),
+  command: z.string().max(256).optional(),
+});
+
+export const CodexSecretsSchema = z
+  .object({
+    apiKey: z.string().max(2000).optional(),
+    clearApiKey: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.apiKey === 'string' || data.clearApiKey === true,
+    { message: 'At least one Codex secret field must be provided' },
+  );
 
 export const ClaudeThirdPartyProfileCreateSchema = z.object({
   name: z.string().min(1).max(64),
@@ -560,6 +578,7 @@ export interface MemorySource {
   label: string;
   scope: 'user-global' | 'main' | 'flow' | 'session';
   kind: 'claude' | 'note' | 'session';
+  runtime?: 'claude' | 'codex';
   writable: boolean;
   exists: boolean;
   updatedAt: string | null;

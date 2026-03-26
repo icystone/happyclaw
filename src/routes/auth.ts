@@ -37,6 +37,7 @@ import {
   getFeishuProviderConfigWithSource,
   getAppearanceConfig,
 } from '../runtime-config.js';
+import { getCodexProviderConfig } from '../codex-config.js';
 import {
   verifyPassword,
   hashPassword,
@@ -145,12 +146,15 @@ function buildSetupStatus() {
     );
     return hasOfficial || hasThirdParty;
   });
+  const codexConfig = getCodexProviderConfig();
+  const codexConfigured = !!codexConfig.apiKey?.trim();
   const { source: feishuSource } = getFeishuProviderConfigWithSource();
   const feishuConfigured = feishuSource !== 'none';
 
   return {
-    needsSetup: !claudeConfigured,
+    needsSetup: !(claudeConfigured || codexConfigured),
     claudeConfigured,
+    codexConfigured,
     feishuConfigured,
   };
 }

@@ -16,6 +16,12 @@ import { getAllRegisteredGroups, getUserById } from '../db.js';
 import { logger } from '../logger.js';
 import { GROUPS_DIR, DATA_DIR } from '../config.js';
 import type { AuthUser } from '../types.js';
+import {
+  DEFAULT_AGENT_RUNTIME,
+  getAllRuntimeStateDirNames,
+  getRuntimeMemoryFileName,
+  normalizeAgentRuntime,
+} from '../agent-runtime.js';
 
 const memoryRoutes = new Hono<{ Variables: Variables }>();
 
@@ -23,7 +29,10 @@ const memoryRoutes = new Hono<{ Variables: Variables }>();
 
 const USER_GLOBAL_DIR = path.join(GROUPS_DIR, 'user-global');
 const MAIN_MEMORY_DIR = path.join(GROUPS_DIR, 'main');
-const MAIN_MEMORY_FILE = path.join(MAIN_MEMORY_DIR, 'CLAUDE.md');
+const MAIN_MEMORY_FILE = path.join(
+  MAIN_MEMORY_DIR,
+  getRuntimeMemoryFileName(DEFAULT_AGENT_RUNTIME),
+);
 const MEMORY_DATA_DIR = path.join(DATA_DIR, 'memory');
 const SESSIONS_DIR = path.join(DATA_DIR, 'sessions');
 const MAX_GLOBAL_MEMORY_LENGTH = 200_000;
@@ -145,6 +154,13 @@ function classifyMemorySource(
   relativePath: string,
 ): Pick<MemorySource, 'scope' | 'kind' | 'label' | 'ownerName'> {
   const parts = relativePath.split('/');
+  const groups = getAllRegisteredGroups();
+  const resolveFolderRuntime = (folder: string) => {
+    for (const group of Object.values(groups)) {
+      if (group.folder === folder) return normalizeAgentRuntime(group.runtime);
+    }
+    return DEFAULT_AGENT_RUNTIME;
+  };
   // data/groups/user-global/{userId}/CLAUDE.md
   if (
     parts[0] === 'data' &&
@@ -152,7 +168,8 @@ function classifyMemorySource(
     parts[2] === 'user-global'
   ) {
     const userId = parts[3] || 'unknown';
-    const name = parts.slice(4).join('/') || 'CLAUDE.md';
+    const name =
+      parts.slice(4).join('/') || getRuntimeMemoryFileName(DEFAULT_AGENT_RUNTIME);
     const owner = getUserById(userId);
     const ownerLabel = owner ? owner.display_name || owner.username : userId;
     return {
@@ -162,9 +179,15 @@ function classifyMemorySource(
       ownerName: ownerLabel,
     };
   }
-  // data/groups/main/CLAUDE.md
-  if (relativePath === 'data/groups/main/CLAUDE.md') {
-    return { scope: 'main', kind: 'claude', label: '主会话记忆 / CLAUDE.md' };
+  // data/groups/main/<runtime-memory>.md
+  if (relativePath.startsWith('data/groups/main/')) {
+    const name = parts.slice(3).join('/') || getRuntimeMemoryFileName('claude');
+    if (
+      name === getRuntimeMemoryFileName('claude') ||
+      name === getRuntimeMemoryFileName('codex')
+    ) {
+      return { scope: 'main', kind: 'claude', label: `主会话记忆 / ${name}` };
+    }
   }
   // data/memory/{folder}/...
   if (parts[0] === 'data' && parts[1] === 'memory') {
@@ -180,14 +203,16 @@ function classifyMemorySource(
   if (parts[0] === 'data' && parts[1] === 'groups') {
     const folder = parts[2] || 'unknown';
     const name = parts.slice(3).join('/');
-    const kind = name === 'CLAUDE.md' ? 'claude' : 'note';
+    const runtime = resolveFolderRuntime(folder);
+    const kind =
+      name === getRuntimeMemoryFileName(runtime) ? 'claude' : 'note';
     return {
       scope: folder === 'main' ? 'main' : 'flow',
       kind,
       label: `${folder} / ${name}`,
     };
   }
-  // data/sessions/{folder}/.claude/...
+  // data/sessions/{folder}/.<runtime>/...
   const sessionRel = parts.slice(2).join('/');
   return {
     scope: 'session',
@@ -226,7 +251,11 @@ function readMemoryFile(
 }
 
 // 记忆路径中禁止写入的系统子目录（CLAUDE.md 除外，它是记忆文件）
-const MEMORY_BLOCKED_DIRS = ['logs', '.claude', 'conversations'];
+const MEMORY_BLOCKED_DIRS = [
+  'logs',
+  'conversations',
+  ...getAllRuntimeStateDirNames(),
+];
 
 function isBlockedMemoryPath(normalizedPath: string): boolean {
   const parts = normalizedPath.split('/');
@@ -323,11 +352,15 @@ function listMemorySources(user: AuthUser): MemorySource[] {
   }
 
   // 1. User-global memory: each user only sees their own
-  files.add(path.join(USER_GLOBAL_DIR, user.id, 'CLAUDE.md'));
+  files.add(path.join(USER_GLOBAL_DIR, user.id, getRuntimeMemoryFileName('claude')));
+  files.add(path.join(USER_GLOBAL_DIR, user.id, getRuntimeMemoryFileName('codex')));
 
   // 2. Group memories: filter by ownership
   for (const folder of accessibleFolders) {
-    files.add(path.join(GROUPS_DIR, folder, 'CLAUDE.md'));
+    const runtime =
+      Object.values(groups).find((group) => group.folder === folder)?.runtime ??
+      DEFAULT_AGENT_RUNTIME;
+    files.add(path.join(GROUPS_DIR, folder, getRuntimeMemoryFileName(runtime)));
   }
 
   // 3. Scan group directories (filtered by access)
@@ -567,7 +600,7 @@ memoryRoutes.put('/file', authMiddleware, async (c) => {
 memoryRoutes.get('/global', authMiddleware, (c) => {
   try {
     const user = c.get('user') as AuthUser;
-    const userGlobalPath = `data/groups/user-global/${user.id}/CLAUDE.md`;
+    const userGlobalPath = `data/groups/user-global/${user.id}/${getRuntimeMemoryFileName('claude')}`;
     return c.json(readMemoryFile(userGlobalPath, user));
   } catch (err) {
     logger.error({ err }, 'Failed to read user global memory');
@@ -593,7 +626,7 @@ memoryRoutes.put('/global', authMiddleware, async (c) => {
 
   try {
     const user = c.get('user') as AuthUser;
-    const userGlobalPath = `data/groups/user-global/${user.id}/CLAUDE.md`;
+    const userGlobalPath = `data/groups/user-global/${user.id}/${getRuntimeMemoryFileName('claude')}`;
     return c.json(
       writeMemoryFile(userGlobalPath, validation.data.content, user),
     );

@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   deleteSession,
+  getGroupRuntimeByFolder,
   getJidsByFolder,
   storeMessageDirect,
   ensureChatExists,
@@ -14,6 +15,7 @@ import {
 import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
 import type { NewMessage, MessageCursor } from './types.js';
+import { getSessionRuntimeDir } from './agent-runtime.js';
 
 // ─── Types ──────────────────────────────────────────────────────
 
@@ -27,17 +29,20 @@ export interface CommandDeps {
 // ─── Session file cleanup (mirrors groups.ts clearSessionJsonlFiles) ────
 
 function clearSessionFiles(folder: string, agentId?: string): void {
-  const claudeDir = agentId
-    ? path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude')
-    : path.join(DATA_DIR, 'sessions', folder, '.claude');
-  if (!fs.existsSync(claudeDir)) return;
+  const runtimeDir = getSessionRuntimeDir(
+    path.join(DATA_DIR, 'sessions'),
+    folder,
+    getGroupRuntimeByFolder(folder) as 'claude' | 'codex',
+    agentId,
+  );
+  if (!fs.existsSync(runtimeDir)) return;
 
   const keep = new Set(['settings.json']);
-  const entries = fs.readdirSync(claudeDir);
+  const entries = fs.readdirSync(runtimeDir);
   for (const entry of entries) {
     if (keep.has(entry)) continue;
     try {
-      fs.rmSync(path.join(claudeDir, entry), { recursive: true, force: true });
+      fs.rmSync(path.join(runtimeDir, entry), { recursive: true, force: true });
     } catch (err) {
       logger.warn(
         { entry, folder, agentId, err },

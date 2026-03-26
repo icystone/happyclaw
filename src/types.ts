@@ -1,4 +1,5 @@
 import type { StreamEvent } from './stream-event.types.js';
+import type { AgentRuntimeId } from './agent-runtime.js';
 
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
@@ -39,6 +40,7 @@ export interface RegisteredGroup {
   name: string;
   folder: string;
   added_at: string;
+  runtime?: AgentRuntimeId;
   containerConfig?: ContainerConfig;
   executionMode?: ExecutionMode; // 默认 'container'
   customCwd?: string; // 宿主机模式的自定义工作目录（绝对路径）

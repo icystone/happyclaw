@@ -5,7 +5,7 @@
 <h1 align="center">HappyClaw</h1>
 
 <p align="center">
-  自托管的多用户本地 AI Agent 系统 — Powered By Claude Code.
+  自托管的多用户本地 AI Agent 系统 — Powered By Claude Code / Codex.
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 **设置向导**
 
-| 创建管理员 | 配置接入（飞书 + Claude） |
+| 创建管理员 | 配置接入（飞书 + Claude / Codex） |
 |:--------:|:---------------------:|
 | <img src="docs/screenshots/setup-wizard.png" width="400" /> | <img src="docs/screenshots/setup-providers.png" width="400" /> |
 

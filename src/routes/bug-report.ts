@@ -46,6 +46,7 @@ let capCache: {
   ghAvailable: boolean;
   ghUsername: string | null;
   claudeAvailable: boolean;
+  codexAvailable: boolean;
   checkedAt: number;
 } | null = null;
 const CAP_CACHE_TTL = 5 * 60 * 1000;
@@ -54,20 +55,25 @@ async function checkCapabilities(): Promise<{
   ghAvailable: boolean;
   ghUsername: string | null;
   claudeAvailable: boolean;
+  codexAvailable: boolean;
 }> {
   if (capCache && Date.now() - capCache.checkedAt < CAP_CACHE_TTL) {
     return {
       ghAvailable: capCache.ghAvailable,
       ghUsername: capCache.ghUsername,
       claudeAvailable: capCache.claudeAvailable,
+      codexAvailable: capCache.codexAvailable,
     };
   }
 
-  const [gh, claude] = await Promise.all([
+  const [gh, claude, codex] = await Promise.all([
     execFileAsync('gh', ['auth', 'status'], { timeout: 5000 })
       .then(() => true)
       .catch(() => false),
     execFileAsync('claude', ['--version'], { timeout: 5000 })
+      .then(() => true)
+      .catch(() => false),
+    execFileAsync('codex', ['--version'], { timeout: 5000 })
       .then(() => true)
       .catch(() => false),
   ]);
@@ -83,8 +89,14 @@ async function checkCapabilities(): Promise<{
     }
   }
 
-  capCache = { ghAvailable: gh, ghUsername, claudeAvailable: claude, checkedAt: Date.now() };
-  return { ghAvailable: gh, ghUsername, claudeAvailable: claude };
+  capCache = {
+    ghAvailable: gh,
+    ghUsername,
+    claudeAvailable: claude,
+    codexAvailable: codex,
+    checkedAt: Date.now(),
+  };
+  return { ghAvailable: gh, ghUsername, claudeAvailable: claude, codexAvailable: codex };
 }
 
 // --- Helpers ---
@@ -284,7 +296,7 @@ bugReportRoutes.get('/capabilities', authMiddleware, async (c) => {
 
 /**
  * POST /api/bug-report/generate
- * Analyze the bug with Claude and generate a structured report
+ * Analyze the bug with the available local AI runtime and generate a structured report
  */
 bugReportRoutes.post('/generate', authMiddleware, async (c) => {
   const user = c.get('user') as AuthUser;
@@ -328,7 +340,7 @@ bugReportRoutes.post('/generate', authMiddleware, async (c) => {
   const rawLogs = readRecentLogs(folder);
   const logs = sanitizeLogs(rawLogs);
 
-  // Try Claude analysis
+  // Try local AI analysis
   const caps = await checkCapabilities();
   if (!caps.claudeAvailable) {
     logger.info('bug-report: claude CLI not available, using fallback template');

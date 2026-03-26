@@ -52,6 +52,7 @@ import {
   getUserPinnedGroups,
   pinGroup,
   unpinGroup,
+  getGroupRuntimeByFolder,
 } from '../db.js';
 import { logger } from '../logger.js';
 import {
@@ -75,6 +76,8 @@ import net from 'node:net';
 import { z } from 'zod';
 import { broadcastNewMessage, invalidateAllowedUserCache } from '../web.js';
 import { getStreamingSession } from '../feishu-streaming-card.js';
+import { normalizeAgentRuntime } from '../agent-runtime.js';
+import { getSessionRuntimeDir } from '../agent-runtime.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -141,6 +144,7 @@ interface GroupPayloadItem {
   name: string;
   folder: string;
   added_at: string;
+  runtime: 'claude' | 'codex';
   kind: 'home' | 'feishu' | 'web';
   editable: boolean;
   deletable: boolean;
@@ -246,6 +250,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       name: group.name,
       folder: group.folder,
       added_at: group.added_at,
+      runtime: normalizeAgentRuntime(group.runtime),
       kind: isHome ? 'home' : isWeb ? 'web' : 'feishu',
       editable: isWeb,
       deletable: isWeb && !isHome,
@@ -291,17 +296,20 @@ function removeFlowArtifacts(folder: string): void {
 }
 
 function clearSessionJsonlFiles(folder: string, agentId?: string): void {
-  const claudeDir = agentId
-    ? path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude')
-    : path.join(DATA_DIR, 'sessions', folder, '.claude');
-  if (!fs.existsSync(claudeDir)) return;
+  const runtimeDir = getSessionRuntimeDir(
+    path.join(DATA_DIR, 'sessions'),
+    folder,
+    getGroupRuntimeByFolder(folder) as 'claude' | 'codex',
+    agentId,
+  );
+  if (!fs.existsSync(runtimeDir)) return;
 
   // 保留 settings.json，清除所有其他运行时文件和目录
   const keep = new Set(['settings.json']);
-  const entries = fs.readdirSync(claudeDir);
+  const entries = fs.readdirSync(runtimeDir);
   for (const entry of entries) {
     if (keep.has(entry)) continue;
-    const fullPath = path.join(claudeDir, entry);
+    const fullPath = path.join(runtimeDir, entry);
     fs.rmSync(fullPath, { recursive: true, force: true });
   }
 }
@@ -377,6 +385,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
 
   // If user didn't specify execution mode, pick based on Docker availability
   const executionMode = validation.data.execution_mode || (await isDockerAvailable() ? 'container' : 'host');
+  const runtime = normalizeAgentRuntime(validation.data.runtime);
   const customCwd = validation.data.custom_cwd; // Schema already trims and converts empty to undefined
   const initSourcePath = validation.data.init_source_path;
   const initGitUrl = validation.data.init_git_url;
@@ -593,6 +602,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     name,
     folder,
     added_at: now,
+    runtime,
     executionMode: executionMode as ExecutionMode,
     customCwd: executionMode === 'host' ? customCwd : undefined,
     initSourcePath: executionMode !== 'host' ? initSourcePath : undefined,
@@ -660,6 +670,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
       name: group.name,
       folder: group.folder,
       added_at: group.added_at,
+      runtime: normalizeAgentRuntime(group.runtime),
       execution_mode: group.executionMode || 'container',
       custom_cwd: hasHostExecutionPermission(authUser)
         ? group.customCwd
