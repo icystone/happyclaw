@@ -187,6 +187,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
             name={g.name}
             folder={g.folder}
             lastMessage={g.lastMessage}
+            runtime={g.runtime}
             executionMode={g.execution_mode}
             isShared={showCollabBadge ? g.is_shared : undefined}
             memberRole={showCollabBadge ? g.member_role : undefined}
@@ -265,6 +266,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
                   name={mainGroup.name}
                   folder={mainGroup.folder}
                   lastMessage={mainGroup.lastMessage}
+                  runtime={mainGroup.runtime}
                   executionMode={mainGroup.execution_mode}
                   isActive={currentGroup === mainGroup.jid}
                   isHome
@@ -292,6 +294,7 @@ export function ChatSidebar({ className, onToggleCollapse }: ChatSidebarProps) {
                     name={g.name}
                     folder={g.folder}
                     lastMessage={g.lastMessage}
+                    runtime={g.runtime}
                     executionMode={g.execution_mode}
                     isShared={g.is_shared}
                     memberRole={g.member_role}

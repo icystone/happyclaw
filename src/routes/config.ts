@@ -15,9 +15,14 @@ import {
   getRegisteredGroup,
   setRegisteredGroup,
   getAgent,
+  updateDefaultRuntimeForHomeAndImGroups,
 } from '../db.js';
 import { authMiddleware, systemConfigMiddleware } from '../middleware/auth.js';
 import {
+  ClaudeConfigSchema,
+  ClaudeSecretsSchema,
+  CodexConfigSchema,
+  CodexSecretsSchema,
   ClaudeCustomEnvSchema,
   FeishuConfigSchema,
   TelegramConfigSchema,
@@ -31,6 +36,18 @@ import {
   UnifiedProviderSecretsSchema,
   BalancingConfigSchema,
 } from '../schemas.js';
+import {
+  detectLocalCodex,
+  getCodexProviderConfig,
+  importLocalCodexConfig,
+  saveCodexProviderConfig,
+  toPublicCodexProviderConfig,
+} from '../codex-config.js';
+import {
+  getDefaultAgentRuntime,
+  saveDefaultAgentRuntime,
+  normalizeAgentRuntime,
+} from '../agent-runtime.js';
 import {
   getClaudeProviderConfig,
   toPublicClaudeProviderConfig,
@@ -68,6 +85,9 @@ import {
   saveUserQQConfig,
   getUserWeChatConfig,
   saveUserWeChatConfig,
+  saveClaudeOfficialProviderSecrets,
+  detectLocalClaudeCode,
+  importLocalClaudeCredentials,
   updateAllSessionCredentials,
 } from '../runtime-config.js';
 import type { ClaudeOAuthCredentials } from '../runtime-config.js';
@@ -82,6 +102,39 @@ import {
 import { providerPool } from '../provider-pool.js';
 
 const configRoutes = new Hono<{ Variables: Variables }>();
+
+configRoutes.get(
+  '/runtime-default',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    return c.json({ defaultRuntime: getDefaultAgentRuntime() });
+  },
+);
+
+configRoutes.put(
+  '/runtime-default',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const runtime = normalizeAgentRuntime(
+      typeof body.defaultRuntime === 'string' ? body.defaultRuntime : undefined,
+    );
+    const saved = saveDefaultAgentRuntime(runtime);
+    const updatedJids = updateDefaultRuntimeForHomeAndImGroups(saved);
+
+    if (deps?.getRegisteredGroups) {
+      const cache = deps.getRegisteredGroups() as Record<string, RegisteredGroup>;
+      for (const jid of updatedJids) {
+        const group = getRegisteredGroup(jid);
+        if (group) cache[jid] = group;
+      }
+    }
+
+    return c.json({ defaultRuntime: saved, updatedJids });
+  },
+);
 
 /**
  * Count how many IM channels are currently enabled for a user, excluding the given channel.
@@ -2150,5 +2203,168 @@ configRoutes.put('/user-im/bindings/:imJid', authMiddleware, async (c) => {
   );
 });
 
+// ─── Local Claude Code detection ──────────────────────────────────
+
+configRoutes.get(
+  '/claude/detect-local',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    return c.json(detectLocalClaudeCode());
+  },
+);
+
+configRoutes.get(
+  '/codex/detect-local',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    return c.json(detectLocalCodex());
+  },
+);
+
+configRoutes.post(
+  '/claude/import-local',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const creds = importLocalClaudeCredentials();
+    if (!creds) {
+      return c.json({ error: '未检测到本机 Claude Code 登录凭据' }, 404);
+    }
+
+    const actor = (c.get('user') as AuthUser).username;
+
+    try {
+      const saved = saveClaudeOfficialProviderSecrets(
+        {
+          anthropicApiKey: '',
+          claudeCodeOauthToken: '',
+          claudeOAuthCredentials: creds,
+        },
+        {
+          activateOfficial: true,
+        },
+      );
+
+      updateAllSessionCredentials(saved);
+      deps?.queue?.closeAllActiveForCredentialRefresh();
+      appendClaudeConfigAudit(actor, 'import_local_cc', [
+        'claudeOAuthCredentials:import_local',
+      ]);
+
+      return c.json(toPublicClaudeProviderConfig(saved));
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Failed to import local credentials';
+      logger.warn({ err }, 'Failed to import local Claude Code credentials');
+      return c.json({ error: message }, 500);
+    }
+  },
+);
+
+configRoutes.post(
+  '/codex/import-local',
+  authMiddleware,
+  systemConfigMiddleware,
+  (c) => {
+    const imported = importLocalCodexConfig();
+    if (!imported) {
+      return c.json({ error: '未检测到本机 Codex API Key' }, 404);
+    }
+    try {
+      const saved = saveCodexProviderConfig(imported);
+      return c.json(toPublicCodexProviderConfig(saved));
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Failed to import local Codex config';
+      logger.warn({ err }, 'Failed to import local Codex config');
+      return c.json({ error: message }, 500);
+    }
+  },
+);
 
 export default configRoutes;
+configRoutes.get('/codex', authMiddleware, systemConfigMiddleware, (c) => {
+  try {
+    return c.json(toPublicCodexProviderConfig(getCodexProviderConfig()));
+  } catch (err) {
+    logger.error({ err }, 'Failed to load Codex config');
+    return c.json({ error: 'Failed to load Codex config' }, 500);
+  }
+});
+
+configRoutes.put('/codex', authMiddleware, systemConfigMiddleware, async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const validation = CodexConfigSchema.safeParse(body);
+  if (!validation.success) {
+    return c.json(
+      { error: 'Invalid request body', details: validation.error.format() },
+      400,
+    );
+  }
+
+  try {
+    const current = getCodexProviderConfig();
+    const saved = saveCodexProviderConfig({
+      baseUrl:
+        validation.data.baseUrl !== undefined
+          ? validation.data.baseUrl
+          : current.baseUrl,
+      apiKey: current.apiKey,
+      model:
+        validation.data.model !== undefined
+          ? validation.data.model
+          : current.model,
+      command:
+        validation.data.command !== undefined
+          ? validation.data.command
+          : current.command,
+    });
+    return c.json(toPublicCodexProviderConfig(saved));
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : 'Invalid Codex config payload';
+    logger.warn({ err }, 'Invalid Codex config payload');
+    return c.json({ error: message }, 400);
+  }
+});
+
+configRoutes.put(
+  '/codex/secrets',
+  authMiddleware,
+  systemConfigMiddleware,
+  async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    const validation = CodexSecretsSchema.safeParse(body);
+    if (!validation.success) {
+      return c.json(
+        { error: 'Invalid request body', details: validation.error.format() },
+        400,
+      );
+    }
+
+    try {
+      const current = getCodexProviderConfig();
+      const saved = saveCodexProviderConfig({
+        baseUrl: current.baseUrl,
+        apiKey:
+          typeof validation.data.apiKey === 'string'
+            ? validation.data.apiKey
+            : validation.data.clearApiKey
+              ? ''
+              : current.apiKey,
+        model: current.model,
+        command: current.command,
+      });
+      return c.json(toPublicCodexProviderConfig(saved));
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Invalid Codex secret payload';
+      logger.warn({ err }, 'Invalid Codex secret payload');
+      return c.json({ error: message }, 400);
+    }
+  },
+);

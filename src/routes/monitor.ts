@@ -14,6 +14,7 @@ import {
   getWebDeps,
 } from '../web-context.js';
 import { getRegisteredGroup, getRouterState, hasContainerModeGroups } from '../db.js';
+import { normalizeAgentRuntime } from '../agent-runtime.js';
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings } from '../runtime-config.js';
 import { logger } from '../logger.js';
@@ -34,6 +35,10 @@ let cachedVersions: {
   imageId: string | null;
 } | null = null;
 const VERSION_CACHE_TTL = 60 * 60 * 1000;
+let cachedCodexVersion: {
+  version: string | null;
+  fetchedAt: number;
+} | null = null;
 
 // Latest version cache (separate TTL, queried from npm registry)
 let cachedLatestVersion: { version: string | null; fetchedAt: number } | null =
@@ -139,6 +144,24 @@ async function getClaudeCodeVersions(): Promise<VersionInfo> {
 
   cachedVersions = { info, fetchedAt: now, imageId };
   return info;
+}
+
+async function getCodexVersion(): Promise<string | null> {
+  const now = Date.now();
+  if (cachedCodexVersion && now - cachedCodexVersion.fetchedAt < VERSION_CACHE_TTL) {
+    return cachedCodexVersion.version;
+  }
+  try {
+    const { stdout } = await execFileAsync('codex', ['--version'], {
+      timeout: 5000,
+    });
+    const version = stdout.trim() || null;
+    cachedCodexVersion = { version, fetchedAt: now };
+    return version;
+  } catch {
+    cachedCodexVersion = { version: null, fetchedAt: now };
+    return null;
+  }
 }
 
 // --- Docker build state ---
@@ -268,6 +291,14 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     }).length;
   }
 
+  const enrichedGroups = filteredGroups.map((item) => {
+    const group = getRegisteredGroup(item.jid);
+    return {
+      ...item,
+      runtime: normalizeAgentRuntime(group?.runtime),
+    };
+  });
+
   return c.json({
     activeContainers,
     activeHostProcesses: isAdmin
@@ -280,10 +311,11 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
       : undefined,
     queueLength,
     uptime: Math.floor(process.uptime()),
-    groups: filteredGroups,
+    groups: enrichedGroups,
     dockerImageExists,
     dockerBuildInProgress: buildState.building,
     claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
+    codexVersion: isAdmin ? await getCodexVersion() : undefined,
     dockerBuildLogs:
       isAdmin && buildState.building ? buildState.logs.slice(-50) : undefined,
     dockerBuildResult: isAdmin ? buildState.result : undefined,
@@ -371,6 +403,7 @@ monitorRoutes.post(
         logger.info('Docker image build completed');
         // Invalidate version cache so next query fetches from new image
         cachedVersions = null;
+        cachedCodexVersion = null;
       } else {
         logger.error({ code }, 'Docker image build failed');
       }

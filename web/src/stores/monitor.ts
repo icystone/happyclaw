@@ -12,10 +12,12 @@ export interface SystemStatus {
   dockerImageExists: boolean;
   dockerBuildInProgress?: boolean;
   claudeCodeVersions?: { host: string | null; container: string | null; latest: string | null } | null;
+  codexVersion?: string | null;
   dockerBuildLogs?: string[];
   dockerBuildResult?: { success: boolean; error?: string } | null;
   groups: Array<{
     jid: string;
+    runtime?: 'claude' | 'codex';
     active: boolean;
     pendingMessages: boolean;
     pendingTasks: number;

@@ -1,4 +1,5 @@
 import type { StreamEvent } from './stream-event.types.js';
+import type { AgentRuntimeId } from './agent-runtime.js';
 
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
@@ -39,6 +40,7 @@ export interface RegisteredGroup {
   name: string;
   folder: string;
   added_at: string;
+  runtime?: AgentRuntimeId;
   containerConfig?: ContainerConfig;
   executionMode?: ExecutionMode; // 默认 'container'
   customCwd?: string; // 宿主机模式的自定义工作目录（绝对路径）
@@ -46,6 +48,7 @@ export interface RegisteredGroup {
   initGitUrl?: string; // 容器模式下 clone 来源的 Git URL
   created_by?: string;
   is_home?: boolean; // 用户主容器标记
+  selected_skills?: string[] | null; // 兼容旧数据；当前默认全部生效
   target_agent_id?: string; // IM 消息路由到指定 conversation agent
   target_main_jid?: string; // IM 消息路由到指定工作区的主对话（web:{folder}）
   reply_policy?: 'source_only' | 'mirror'; // IM 绑定的回复策略

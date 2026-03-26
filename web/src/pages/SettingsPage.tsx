@@ -5,6 +5,9 @@ import { Menu } from 'lucide-react';
 import { useAuthStore } from '../stores/auth';
 import { SettingsNav } from '../components/settings/SettingsNav';
 import { ClaudeProviderSection } from '../components/settings/ClaudeProviderSection';
+import { CodexProviderSection } from '../components/settings/CodexProviderSection';
+import { DefaultRuntimeSection } from '../components/settings/DefaultRuntimeSection';
+import { AIProviderOverview } from '../components/settings/AIProviderOverview';
 import { RegistrationSection } from '../components/settings/RegistrationSection';
 import { ProfileSection } from '../components/settings/ProfileSection';
 import { SecuritySection } from '../components/settings/SecuritySection';
@@ -30,6 +33,8 @@ export function SettingsPage() {
   const { user: currentUser } = useAuthStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const [navOpen, setNavOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const hasSystemConfigPermission =
     currentUser?.role === 'admin' || !!currentUser?.permissions.includes('manage_system_config');
@@ -65,7 +70,7 @@ export function SettingsPage() {
     tabs.push({ key: 'my-channels', label: '消息通道' });
     tabs.push({ key: 'security', label: '安全' });
     if (canManageSystemConfig) {
-      tabs.push({ key: 'claude', label: 'Claude' });
+      tabs.push({ key: 'claude', label: 'AI' });
       tabs.push({ key: 'registration', label: '注册' });
       tabs.push({ key: 'appearance', label: '全局外观' });
       tabs.push({ key: 'system', label: '系统' });
@@ -95,7 +100,7 @@ export function SettingsPage() {
   }, [activeTab]);
 
   const sectionTitle: Record<SettingsTab, string> = {
-    claude: 'Claude 提供商',
+    claude: 'AI 提供商',
     registration: '注册管理',
     appearance: '全局外观',
     system: '系统参数',
@@ -191,18 +196,42 @@ export function SettingsPage() {
                 </div>
               )}
 
-              <Card>
-                <CardContent>
-                  {activeTab === 'claude' && <ClaudeProviderSection setNotice={() => {}} setError={() => {}} />}
-                  {activeTab === 'registration' && <RegistrationSection />}
-                  {activeTab === 'appearance' && <AppearanceSection />}
-                  {activeTab === 'system' && <SystemSettingsSection />}
-                  {activeTab === 'profile' && <ProfileSection />}
-                  {activeTab === 'my-channels' && <UserChannelsSection />}
-                  {activeTab === 'security' && <SecuritySection />}
-                  {activeTab === 'about' && <AboutSection />}
-                </CardContent>
-              </Card>
+              {(notice || error) && (
+                <div className="bg-card rounded-xl border border-border p-4 space-y-1">
+                  {notice && <div className="text-sm text-green-600">{notice}</div>}
+                  {error && <div className="text-sm text-red-600">{error}</div>}
+                </div>
+              )}
+
+              {activeTab === 'claude' ? (
+                <div className="space-y-6">
+                  <AIProviderOverview setNotice={setNotice} setError={setError} />
+
+                  <section className="bg-card rounded-2xl border border-border p-6">
+                    <DefaultRuntimeSection setNotice={setNotice} setError={setError} />
+                  </section>
+
+                  <section className="bg-card rounded-2xl border border-border p-6">
+                    <ClaudeProviderSection setNotice={setNotice} setError={setError} />
+                  </section>
+
+                  <section className="bg-card rounded-2xl border border-border p-6">
+                    <CodexProviderSection setNotice={setNotice} setError={setError} />
+                  </section>
+                </div>
+              ) : (
+                <Card>
+                  <CardContent>
+                    {activeTab === 'registration' && <RegistrationSection />}
+                    {activeTab === 'appearance' && <AppearanceSection />}
+                    {activeTab === 'system' && <SystemSettingsSection />}
+                    {activeTab === 'profile' && <ProfileSection />}
+                    {activeTab === 'my-channels' && <UserChannelsSection />}
+                    {activeTab === 'security' && <SecuritySection />}
+                    {activeTab === 'about' && <AboutSection />}
+                  </CardContent>
+                </Card>
+              )}
             </div>
           </div>
         )}

@@ -427,6 +427,14 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                 </span>
               </>
             )}
+            {!isWaiting && group.runtime && (
+              <>
+                <span className="text-slate-300">·</span>
+                <span className={`inline-flex items-center px-1 py-px rounded text-[10px] font-medium ${group.runtime === 'codex' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                  {group.runtime === 'codex' ? 'Codex' : 'Claude'}
+                </span>
+              </>
+            )}
             {isOwnHome && imStatus && (imStatus.feishu || imStatus.telegram) && (
               <>
                 <span className="text-muted-foreground/40">·</span>
@@ -819,8 +827,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         onConfirm={handleResetSession}
         title="清除上下文"
         message={resetAgentId
-          ? '将清除该子对话的 Claude 会话上下文，下次发送消息时将开始全新会话。聊天记录不受影响。'
-          : '将清除 Claude 会话上下文并停止运行中的工作区进程，下次发送消息时将开始全新会话。聊天记录不受影响。'
+          ? '将清除该子对话的运行时会话上下文，下次发送消息时将开始全新会话。聊天记录不受影响。'
+          : '将清除当前运行时会话上下文并停止运行中的工作区进程，下次发送消息时将开始全新会话。聊天记录不受影响。'
         }
         confirmText="清除"
         confirmVariant="danger"

@@ -2,6 +2,10 @@ import path from 'path';
 import fs from 'fs';
 import { GROUPS_DIR } from './config.js';
 import { logger } from './logger.js';
+import {
+  getAllRuntimeMemoryFileNames,
+  getAllRuntimeStateDirNames,
+} from './agent-runtime.js';
 
 // --- Storage usage cache (5 minute TTL) ---
 const _storageCache = new Map<string, { bytes: number; expires: number }>();
@@ -23,7 +27,12 @@ export interface FileEntry {
 
 // 常量
 export const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB
-const SYSTEM_PATHS = ['logs', 'CLAUDE.md', '.claude', 'conversations'];
+const SYSTEM_PATHS = [
+  'logs',
+  'conversations',
+  ...getAllRuntimeMemoryFileNames(),
+  ...getAllRuntimeStateDirNames(),
+];
 
 /**
  * 获取会话流的文件根目录

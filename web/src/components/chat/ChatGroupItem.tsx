@@ -13,6 +13,7 @@ export interface ChatGroupItemProps {
   name: string;
   folder: string;
   lastMessage?: string;
+  runtime?: 'claude' | 'codex';
   executionMode?: 'container' | 'host';
   isShared?: boolean;
   memberRole?: 'owner' | 'member';
@@ -35,6 +36,7 @@ export function ChatGroupItem({
   name,
   folder,
   lastMessage,
+  runtime,
   executionMode,
   isShared,
   memberRole,
@@ -102,6 +104,15 @@ export function ChatGroupItem({
           ) : executionMode === 'container' ? (
             <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-sky-100 text-sky-700">
               Docker
+            </span>
+          ) : null}
+          {runtime === 'claude' ? (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-emerald-100 text-emerald-700">
+              Claude
+            </span>
+          ) : runtime === 'codex' ? (
+            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-100 text-indigo-700">
+              Codex
             </span>
           ) : null}
           {isShared && memberRole === 'owner' && (memberCount ?? 0) >= 2 && (

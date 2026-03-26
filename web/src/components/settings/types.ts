@@ -71,6 +71,20 @@ export interface ClaudeConfigPublic {
   claudeOAuthCredentialsAccessTokenMasked: string | null;
 }
 
+export interface CodexConfigPublic {
+  baseUrl: string;
+  model: string;
+  command: string;
+  updatedAt: string | null;
+  hasApiKey: boolean;
+  apiKeyMasked: string | null;
+}
+
+export interface SettingsNotification {
+  setNotice: (msg: string | null) => void;
+  setError: (msg: string | null) => void;
+}
+
 // ─── 通用类型 ────────────────────────────────────────────────
 
 export interface EnvRow {
