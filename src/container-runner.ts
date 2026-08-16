@@ -2856,11 +2856,16 @@ export async function runCodexContainerAgent(
     group,
     isAdminHome,
     !!group.created_by,
-    group.selected_skills ?? null,
-    input.agentId,
+    input.agentId, // sessionAgentId
     ownerHomeFolder,
     input.taskRunId,
-    undefined,
+    undefined, // resolvedProvider
+    input.agentId, // ipcAgentId
+    input.agentProfile,
+    input.channelContext,
+    undefined, // poolModelOverride
+    false, // modelSelectionPinned
+    undefined, // containerProxy (defaults)
     'codex',
   );
 
@@ -2882,9 +2887,14 @@ export async function runCodexContainerAgent(
     ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
     : '';
   const containerName = `happyclaw-codex-${safeName}${agentSuffix}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, {
-    HAPPYCLAW_RUNTIME: 'codex',
-  });
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    TIMEZONE,
+    detectContainerHostIdentity(),
+    { addHostGateway: false },
+    { HAPPYCLAW_RUNTIME: 'codex' },
+  );
 
   logger.info(
     {

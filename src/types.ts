@@ -191,6 +191,8 @@ export interface RegisteredGroup {
   /** Channel account that owns this external chat. Null means legacy/default. */
   channel_account_id?: string;
   is_home?: boolean; // 用户主容器标记
+  /** 兼容旧数据；当前默认全部生效（skills 已改为用户级全局生效）。 */
+  selected_skills?: string[] | null;
   /** Direct-chat binding target: a specific workspace conversation session. */
   target_agent_id?: string;
   /**
