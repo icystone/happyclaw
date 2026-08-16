@@ -45,11 +45,14 @@
 
 HappyClaw 是一个基于 [Claude Agent SDK for TypeScript](https://github.com/anthropics/claude-agent-sdk-typescript) 的自托管 AI 智能体系统。它把完整的 Claude Code 运行时封装成一个可持续运行的多用户服务，让你可以从浏览器、飞书、Telegram、QQ、钉钉、微信、企业微信、Discord 或 WhatsApp 使用同一套智能体、工作区、能力和自动化任务。
 
+除 Claude Code 外，HappyClaw 还支持 **Codex** 作为第二条原生 runtime：Claude runtime 通过 Claude Agent SDK 驱动 Claude Code CLI，Codex runtime 直接调用 `codex exec --json`。每个工作区可独立选择 runtime，两者共享文件读写、终端操作、浏览器自动化和 MCP 工具生态；运行时主记忆文件也随之切换（Claude 用 `CLAUDE.md`，Codex 用 `AGENTS.md`）。
+
 HappyClaw 不是一个简单的聊天 API Wrapper。智能体运行在真实的 Claude Code 环境中，可以读写项目文件、执行终端命令、使用浏览器、调用 MCP、加载 Skills，并在多个独立工作区和会话之间保持清晰的权限与上下文边界。
 
 ### 为什么使用 HappyClaw
 
 - **Claude Code 原生运行时** — 直接使用版本锁定的 Claude Agent SDK 与 Claude Code CLI，不重新实现工具调用和运行循环。
+- **Claude / Codex 双 runtime** — 每个工作区可固定选择 Claude Code 或 Codex，设置页统一管理默认 runtime 与 provider，宿主机与容器模式均支持两种 runtime。
 - **智能体优先工作台** — 智能体管身份和能力，工作区管文件与执行环境，会话管对话上下文，产品层级清晰。
 - **随时可访问** — Web、PWA 和 8 种 IM 渠道统一接入，任务完成后可以主动把结果送回消息渠道。
 - **多用户与多账号** — 用户、渠道凭据、工作区及其 Memory、Skills、MCP 和运行数据彼此隔离。
