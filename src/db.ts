@@ -7,6 +7,11 @@ import { STORE_DIR, GROUPS_DIR } from './config.js';
 import { normalizeAgentEffort } from './agent-effort.js';
 import { logger } from './logger.js';
 import {
+  getDefaultAgentRuntime,
+  getUserGlobalMemoryFilePath,
+  normalizeAgentRuntime,
+} from './agent-runtime.js';
+import {
   AgentProfile,
   AgentBuilderDefinition,
   AgentBuilderDraft,
@@ -673,6 +678,7 @@ export function initDatabase(): void {
       name TEXT NOT NULL,
       folder TEXT NOT NULL,
       added_at TEXT NOT NULL,
+      runtime TEXT NOT NULL DEFAULT 'claude',
       container_config TEXT,
       created_by TEXT,
       is_home INTEGER DEFAULT 0
@@ -1268,6 +1274,11 @@ export function initDatabase(): void {
     'execution_mode',
     "TEXT DEFAULT 'container'",
   );
+  ensureColumn(
+    'registered_groups',
+    'runtime',
+    `TEXT NOT NULL DEFAULT '${getDefaultAgentRuntime()}'`,
+  );
   ensureColumn('registered_groups', 'custom_cwd', 'TEXT');
   ensureColumn('registered_groups', 'init_source_path', 'TEXT');
   ensureColumn('registered_groups', 'init_git_url', 'TEXT');
@@ -1490,6 +1501,7 @@ export function initDatabase(): void {
           folder TEXT NOT NULL,
           added_at TEXT NOT NULL,
           avatar_url TEXT,
+          runtime TEXT NOT NULL DEFAULT 'claude',
           container_config TEXT,
           execution_mode TEXT DEFAULT 'container',
           custom_cwd TEXT,
@@ -1499,7 +1511,7 @@ export function initDatabase(): void {
           owner_claim_source TEXT,
           is_home INTEGER DEFAULT 0
         );
-        INSERT INTO registered_groups_new SELECT jid, name, folder, added_at, avatar_url, container_config, execution_mode, custom_cwd, NULL, NULL, NULL, NULL, 0 FROM registered_groups;
+        INSERT INTO registered_groups_new SELECT jid, name, folder, added_at, avatar_url, 'claude', container_config, execution_mode, custom_cwd, NULL, NULL, NULL, NULL, 0 FROM registered_groups;
         DROP TABLE registered_groups;
         ALTER TABLE registered_groups_new RENAME TO registered_groups;
       `);
@@ -1547,6 +1559,7 @@ export function initDatabase(): void {
       'folder',
       'added_at',
       'avatar_url',
+      'runtime',
       'container_config',
       'execution_mode',
       'custom_cwd',
@@ -9771,6 +9784,7 @@ type RegisteredGroupRow = {
   folder: string;
   added_at: string;
   avatar_url: string | null;
+  runtime: string | null;
   container_config: string | null;
   execution_mode: string | null;
   custom_cwd: string | null;
@@ -9869,6 +9883,7 @@ function parseGroupRow(
     folder: row.folder,
     added_at: row.added_at,
     avatar_url: row.avatar_url ?? undefined,
+    runtime: normalizeAgentRuntime(row.runtime),
     ...parsedContainerConfig,
     executionMode: parseExecutionMode(row.execution_mode, `group ${row.jid}`),
     customCwd: row.custom_cwd ?? undefined,
@@ -10935,13 +10950,14 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   db.transaction(() => {
     const existing = getRegisteredGroup(jid);
     db.prepare(
-      `INSERT INTO registered_groups (jid, name, folder, added_at, avatar_url, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, channel_account_id, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention, activation_mode, audience_mode, owner_im_id, owner_claim_source, mcp_mode, selected_mcps, conversation_source, conversation_nav_mode, binding_mode, native_context_type, feishu_chat_mode, feishu_group_message_type, sender_allowlist)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO registered_groups (jid, name, folder, added_at, avatar_url, runtime, container_config, execution_mode, custom_cwd, init_source_path, init_git_url, created_by, channel_account_id, is_home, selected_skills, target_agent_id, target_main_jid, reply_policy, require_mention, activation_mode, audience_mode, owner_im_id, owner_claim_source, mcp_mode, selected_mcps, conversation_source, conversation_nav_mode, binding_mode, native_context_type, feishu_chat_mode, feishu_group_message_type, sender_allowlist)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(jid) DO UPDATE SET
          name = excluded.name,
          folder = excluded.folder,
          added_at = excluded.added_at,
          avatar_url = COALESCE(excluded.avatar_url, registered_groups.avatar_url),
+         runtime = excluded.runtime,
          container_config = excluded.container_config,
          execution_mode = excluded.execution_mode,
          custom_cwd = excluded.custom_cwd,
@@ -10974,6 +10990,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
       group.folder,
       group.added_at,
       group.avatar_url ?? null,
+      normalizeAgentRuntime(group.runtime),
       parsedContainerConfig.config
         ? JSON.stringify(parsedContainerConfig.config)
         : null,
@@ -11162,6 +11179,15 @@ export function getJidsByFolder(folder: string): string[] {
     .prepare('SELECT jid FROM registered_groups WHERE folder = ?')
     .all(folder) as Array<{ jid: string }>;
   return rows.map((r) => r.jid);
+}
+
+export function getGroupRuntimeByFolder(folder: string): string {
+  const row = db
+    .prepare(
+      "SELECT runtime FROM registered_groups WHERE folder = ? ORDER BY CASE WHEN runtime IS NULL OR runtime = '' THEN 1 ELSE 0 END, added_at DESC LIMIT 1",
+    )
+    .get(folder) as { runtime: string | null } | undefined;
+  return normalizeAgentRuntime(row?.runtime);
 }
 
 /** Check if any registered group uses container execution mode (efficient targeted query). */
@@ -11693,6 +11719,7 @@ export function ensureUserHomeGroup(
     name,
     folder,
     added_at: now,
+    runtime: getDefaultAgentRuntime(),
     executionMode: isAdmin ? 'host' : 'container',
     created_by: userId,
     is_home: true,
@@ -11707,7 +11734,63 @@ export function ensureUserHomeGroup(
   // Ensure chat row exists
   ensureChatExists(jid);
 
+  // Create user-global memory directory and initialize the runtime memory file.
+  const userGlobalDir = path.join(GROUPS_DIR, 'user-global', userId);
+  fs.mkdirSync(userGlobalDir, { recursive: true });
+  const userMemoryFile = getUserGlobalMemoryFilePath(
+    path.join(GROUPS_DIR, 'user-global'),
+    userId,
+    group.runtime,
+  );
+  if (!fs.existsSync(userMemoryFile)) {
+    const templatePath = path.resolve(
+      process.cwd(),
+      'config',
+      'global-claude-md.template.md',
+    );
+    if (fs.existsSync(templatePath)) {
+      try {
+        fs.writeFileSync(userMemoryFile, fs.readFileSync(templatePath, 'utf-8'), {
+          flag: 'wx',
+        });
+      } catch {
+        // EEXIST race or read error — ignore
+      }
+    }
+  }
+
   return jid;
+}
+
+export function updateDefaultRuntimeForHomeAndImGroups(
+  runtime: 'claude' | 'codex',
+): string[] {
+  const normalized = normalizeAgentRuntime(runtime);
+  const groups = getAllRegisteredGroups();
+  const homeFolders = new Set(
+    Object.values(groups)
+      .filter((group) => group.is_home)
+      .map((group) => group.folder),
+  );
+
+  const updatedJids: string[] = [];
+  for (const [jid, group] of Object.entries(groups)) {
+    const isDefaultImGroup =
+      (jid.startsWith('feishu:') ||
+        jid.startsWith('telegram:') ||
+        jid.startsWith('qq:')) &&
+      !group.target_agent_id &&
+      !group.target_main_jid &&
+      homeFolders.has(group.folder);
+
+    if (!group.is_home && !isDefaultImGroup) continue;
+    if (normalizeAgentRuntime(group.runtime) === normalized) continue;
+
+    setRegisteredGroup(jid, { ...group, runtime: normalized });
+    updatedJids.push(jid);
+  }
+
+  return updatedJids;
 }
 
 export function deleteChatHistory(chatJid: string): void {

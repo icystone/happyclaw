@@ -24,6 +24,7 @@ import {
   listUncertainChannelOutbox,
   resolveUncertainChannelOutbox,
 } from '../channel-reliability-store.js';
+import { normalizeAgentRuntime } from '../agent-runtime.js';
 import { CONTAINER_IMAGE } from '../config.js';
 import { getSystemSettings, getProviders } from '../runtime-config.js';
 import { logger } from '../logger.js';
@@ -44,6 +45,10 @@ let cachedVersions: {
   imageId: string | null;
 } | null = null;
 const VERSION_CACHE_TTL = 60 * 60 * 1000;
+let cachedCodexVersion: {
+  version: string | null;
+  fetchedAt: number;
+} | null = null;
 
 // Latest version cache (separate TTL, queried from npm registry)
 let cachedLatestVersion: { version: string | null; fetchedAt: number } | null =
@@ -164,6 +169,24 @@ async function getClaudeCodeVersions(): Promise<VersionInfo> {
 }
 
 // --- Docker image pull state ---
+
+async function getCodexVersion(): Promise<string | null> {
+  const now = Date.now();
+  if (cachedCodexVersion && now - cachedCodexVersion.fetchedAt < VERSION_CACHE_TTL) {
+    return cachedCodexVersion.version;
+  }
+  try {
+    const { stdout } = await execFileAsync('codex', ['--version'], {
+      timeout: 5000,
+    });
+    const version = stdout.trim() || null;
+    cachedCodexVersion = { version, fetchedAt: now };
+    return version;
+  } catch {
+    cachedCodexVersion = { version: null, fetchedAt: now };
+    return null;
+  }
+}
 
 let pullState: {
   pulling: boolean;
@@ -312,6 +335,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     const reg = allRegistered[baseJid];
     return {
       ...g,
+      runtime: normalizeAgentRuntime(reg?.runtime),
       ownerUsername: reg?.created_by
         ? (userNameMap.get(reg.created_by) ?? null)
         : null,
@@ -336,6 +360,7 @@ monitorRoutes.get('/status', authMiddleware, async (c) => {
     adminHostOnlyMode: isAdmin ? systemSettings.adminHostOnlyMode : undefined,
     dockerPullInProgress: pullState.pulling,
     claudeCodeVersions: isAdmin ? await getClaudeCodeVersions() : undefined,
+    codexVersion: isAdmin ? await getCodexVersion() : undefined,
     dockerPullLogs:
       isAdmin && pullState.pulling ? pullState.logs.slice(-50) : undefined,
     dockerPullResult: isAdmin ? pullState.result : undefined,
@@ -538,6 +563,7 @@ monitorRoutes.post(
       if (success) {
         cachedDockerImageId = null;
         cachedVersions = null;
+        cachedCodexVersion = null;
         logger.info({ image: CONTAINER_IMAGE }, 'Docker image pull completed');
       } else {
         logger.error(

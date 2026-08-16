@@ -122,6 +122,7 @@ import {
   SYSTEM_CAPABILITY_LOCK_KEY,
   withCapabilityScopeLocks,
 } from '../capability-lock.js';
+import { normalizeAgentRuntime } from '../agent-runtime.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -286,6 +287,7 @@ interface GroupPayloadItem {
   name: string;
   folder: string;
   added_at: string;
+  runtime: 'claude' | 'codex';
   kind: 'home' | 'feishu' | 'web';
   editable: boolean;
   deletable: boolean;
@@ -375,6 +377,7 @@ function buildGroupsPayload(user: AuthUser): Record<string, GroupPayloadItem> {
       name: group.name,
       folder: group.folder,
       added_at: group.added_at,
+      runtime: normalizeAgentRuntime(group.runtime),
       kind: isHome ? 'home' : isWeb ? 'web' : 'feishu',
       editable: isWeb,
       deletable: isWeb && !isHome,
@@ -600,6 +603,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
         ? 'host'
         : 'container');
   const interactionMode = validation.data.interaction_mode ?? 'assistant';
+  const runtime = normalizeAgentRuntime(validation.data.runtime);
   const customCwd = validation.data.custom_cwd; // Schema already trims and converts empty to undefined
   const initSourcePath = validation.data.init_source_path;
   const initGitUrl = validation.data.init_git_url;
@@ -894,6 +898,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     name,
     folder,
     added_at: now,
+    runtime,
     executionMode: executionMode as ExecutionMode,
     customCwd: executionMode === 'host' ? customCwd : undefined,
     initSourcePath: executionMode !== 'host' ? initSourcePath : undefined,
@@ -1079,6 +1084,7 @@ groupRoutes.post('/', authMiddleware, async (c) => {
     name: group.name,
     folder: group.folder,
     added_at: group.added_at,
+    runtime: normalizeAgentRuntime(group.runtime),
     kind: 'web',
     editable: true,
     deletable: true,

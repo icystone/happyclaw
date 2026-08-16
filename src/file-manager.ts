@@ -5,6 +5,10 @@ import { fileURLToPath } from 'url';
 import { DATA_DIR, GROUPS_DIR, MAX_FILE_SIZE } from './config.js';
 import { deleteContainerEnvConfig } from './runtime-config.js';
 import { logger } from './logger.js';
+import {
+  getAllRuntimeMemoryFileNames,
+  getAllRuntimeStateDirNames,
+} from './agent-runtime.js';
 
 // --- Storage usage cache (5 minute TTL) ---
 const _storageCache = new Map<string, { bytes: number; expires: number }>();
@@ -35,7 +39,14 @@ export interface FileEntry {
 // MAX_FILE_SIZE 统一由 config.ts 定义（可通过 MAX_FILE_SIZE_MB 环境变量配置），
 // 此处 re-export 保持既有 import 路径不变。
 export { MAX_FILE_SIZE };
-const SYSTEM_PATHS = ['logs', 'CLAUDE.md', '.claude', 'conversations'];
+// 系统路径覆盖所有运行时的记忆文件（CLAUDE.md / AGENTS.md）与状态目录
+// （.claude / .codex），使 claude 与 codex 会话获得同等的「禁删除、禁覆盖」保护。
+const SYSTEM_PATHS = [
+  'logs',
+  'conversations',
+  ...getAllRuntimeMemoryFileNames(),
+  ...getAllRuntimeStateDirNames(),
+];
 // 预先转小写一次，匹配大小写不敏感文件系统（macOS APFS / Windows NTFS）。
 const SYSTEM_PATHS_LOWER = SYSTEM_PATHS.map((p) => p.toLowerCase());
 

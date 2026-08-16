@@ -7,9 +7,9 @@
 <h1 align="center">HappyClaw</h1>
 
 <p align="center">
-  <strong>自托管、多用户、智能体优先的 Claude Code 工作台</strong>
+  <strong>自托管、多用户、智能体优先的 Claude Code / Codex 工作台</strong>
   <br />
-  让 Claude Code 通过 Web 与 8 种消息渠道长期在线，在宿主机或 Docker 沙箱中安全执行任务。
+  让 Claude Code 与 Codex 通过 Web 与 8 种消息渠道长期在线，在宿主机或 Docker 沙箱中安全执行任务。
 </p>
 
 <p align="center">

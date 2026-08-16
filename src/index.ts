@@ -75,6 +75,7 @@ import {
   ContainerOutput,
   cleanupContainerTaskRuntimeEnvDirs,
   closeRunnerAfterRotatingProviderTurn,
+  runCodexContainerAgent,
   runContainerAgent,
   runHostAgent,
   runAgentWithModelFallback,
@@ -203,6 +204,8 @@ import {
   restorePromotingFollowUpBatch,
   setMessageFollowUp,
   updateQueuedFollowUpContent,
+  insertUsageRecord,
+  getGroupRuntimeByFolder,
 } from './db.js';
 import {
   createWorkspaceMemory,
@@ -432,6 +435,11 @@ import {
   MAX_TASK_PROMPT_LENGTH,
   MAX_TASK_SCRIPT_COMMAND_LENGTH,
 } from './schemas.js';
+import {
+  getSessionRuntimeDir,
+  normalizeAgentRuntime,
+  getDefaultAgentRuntime,
+} from './agent-runtime.js';
 import type {
   FeishuConnectConfig,
   TelegramConnectConfig,
@@ -2212,6 +2220,7 @@ function resolveEffectiveGroup(group: RegisteredGroup): {
       return {
         effectiveGroup: {
           ...group,
+          runtime: sibling.runtime || group.runtime,
           executionMode: sibling.executionMode,
           customCwd: sibling.customCwd || group.customCwd,
           created_by: group.created_by || sibling.created_by,
@@ -3522,24 +3531,27 @@ async function sendPluginExpanderReply(
   return { messageId: msgId, acknowledged };
 }
 
-function getSessionClaudeDir(folder: string, agentId?: string): string {
-  return agentId
-    ? path.join(DATA_DIR, 'sessions', folder, 'agents', agentId, '.claude')
-    : path.join(DATA_DIR, 'sessions', folder, '.claude');
+function getSessionRuntimeStateDir(folder: string, agentId?: string): string {
+  return getSessionRuntimeDir(
+    path.join(DATA_DIR, 'sessions'),
+    folder,
+    getGroupRuntimeByFolder(folder) as 'claude' | 'codex',
+    agentId,
+  );
 }
 
 async function clearSessionRuntimeFiles(
   folder: string,
   agentId?: string,
 ): Promise<void> {
-  const claudeDir = getSessionClaudeDir(folder, agentId);
-  if (!fs.existsSync(claudeDir)) return;
+  const runtimeDir = getSessionRuntimeStateDir(folder, agentId);
+  if (!fs.existsSync(runtimeDir)) return;
 
   let cleared = false;
   try {
-    for (const entry of fs.readdirSync(claudeDir)) {
+    for (const entry of fs.readdirSync(runtimeDir)) {
       if (entry === 'settings.json') continue;
-      fs.rmSync(path.join(claudeDir, entry), { recursive: true, force: true });
+      fs.rmSync(path.join(runtimeDir, entry), { recursive: true, force: true });
     }
     cleared = true;
   } catch {
@@ -3557,7 +3569,7 @@ async function clearSessionRuntimeFiles(
           'run',
           '--rm',
           '-v',
-          `${claudeDir}:/target`,
+          `${runtimeDir}:/target`,
           CONTAINER_IMAGE,
           'sh',
           '-c',
@@ -9476,7 +9488,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 async function runTerminalWarmup(chatJid: string): Promise<void> {
   const group = registeredGroups[chatJid];
   if (!group) return;
-  if ((group.executionMode || 'container') === 'host') return;
+  // Skip warmup for host mode (no Docker container) and Codex (no TS compilation)
+  if (
+    (group.executionMode || 'container') === 'host' ||
+    normalizeAgentRuntime(group.runtime) === 'codex'
+  )
+    return;
 
   logger.info({ chatJid, group: group.name }, 'Starting terminal warmup run');
 
@@ -9560,7 +9577,12 @@ async function runTerminalWarmup(chatJid: string): Promise<void> {
 function ensureTerminalContainerStarted(chatJid: string): boolean {
   const group = registeredGroups[chatJid];
   if (!group) return false;
-  if ((group.executionMode || 'container') === 'host') return false;
+  // Skip for host mode (no Docker container) and Codex (no TS compilation warmup)
+  if (
+    (group.executionMode || 'container') === 'host' ||
+    normalizeAgentRuntime(group.runtime) === 'codex'
+  )
+    return false;
 
   const status = queue.getStatus();
   const groupStatus = status.groups.find((g) => g.jid === chatJid);
@@ -9728,6 +9750,7 @@ async function runAgent(
   ipcWatcherManager?.watchGroup(group.folder);
   try {
     const executionMode = group.executionMode || 'container';
+    const useHostRunner = executionMode === 'host';
     const feishuCliAccountId =
       executionMode === 'container'
         ? resolveFeishuCliBoundAccountId({
@@ -9743,7 +9766,7 @@ async function runAgent(
     ) => {
       selectedProviderIdForRun = selectedProviderId;
       // 宿主机模式：containerName 传 null，走 process.kill() 路径
-      const containerName = executionMode === 'container' ? identifier : null;
+      const containerName = useHostRunner ? null : identifier;
       queue.registerProcess(chatJid, proc, {
         containerName,
         groupFolder: group.folder,
@@ -9759,6 +9782,18 @@ async function runAgent(
     };
 
     const ownerHomeFolder = resolveOwnerHomeFolder(group);
+
+    const containerInput: ContainerInput = {
+      prompt,
+      sessionId,
+      turnId,
+      groupFolder: group.folder,
+      chatJid,
+      isMain: isAdminHome,
+      isHome,
+      isAdminHome,
+      images,
+    };
 
     let output: ContainerOutput;
 
@@ -9800,6 +9835,14 @@ async function runAgent(
           messageTaskId,
           agentProfile: containerAgentProfile,
         },
+        onProcessCb,
+        wrappedOnOutput,
+        ownerHomeFolder,
+      );
+    } else if (normalizeAgentRuntime(group.runtime) === 'codex') {
+      output = await runCodexContainerAgent(
+        group,
+        containerInput,
         onProcessCb,
         wrappedOnOutput,
         ownerHomeFolder,
@@ -16754,6 +16797,14 @@ async function processAgentConversation(
         wrappedOnOutput,
         ownerHomeFolder,
       );
+    } else if (normalizeAgentRuntime(effectiveGroup.runtime) === 'codex') {
+      output = await runCodexContainerAgent(
+        effectiveGroup,
+        containerInput,
+        onProcessCb,
+        wrappedOnOutput,
+        ownerHomeFolder,
+      );
     } else {
       output = await runAgentWithModelFallback(
         runContainerAgent,
@@ -18112,6 +18163,12 @@ function buildOnNewChat(
   getOwnerOpenId?: () => string | undefined,
 ): (chatJid: string, chatName: string) => void {
   return (chatJid, chatName) => {
+    const siblingJids = getJidsByFolder(homeFolder);
+    const homeGroup = siblingJids
+      .map((jid) => registeredGroups[jid] ?? getRegisteredGroup(jid))
+      .find((group) => group?.is_home);
+    const inheritedExecutionMode = homeGroup?.executionMode;
+
     const existing = registeredGroups[chatJid];
     if (existing) {
       // Already owned by this user — update name if changed (IM channel may now have real group name)
@@ -18165,6 +18222,8 @@ function buildOnNewChat(
         existing.created_by = userId;
         if (isAdminHostOnlyOwner(userId)) {
           existing.executionMode = 'host';
+        } else if (inheritedExecutionMode) {
+          existing.executionMode = inheritedExecutionMode;
         }
         setRegisteredGroup(chatJid, existing);
         registeredGroups[chatJid] = existing;
@@ -18249,6 +18308,10 @@ function buildOnNewChat(
       name: chatName,
       folder: homeFolder,
       added_at: new Date().toISOString(),
+      runtime: getDefaultAgentRuntime(),
+      executionMode: isAdminHostOnlyOwner(userId)
+        ? 'host'
+        : inheritedExecutionMode,
       created_by: userId,
       owner_im_id: ownerOpenId,
       owner_claim_source: ownerOpenId ? 'auto_feishu' : undefined,

@@ -278,6 +278,7 @@ export const GroupCreateSchema = z.object({
     .string()
     .optional()
     .transform((val) => (val && val.trim() ? val.trim() : undefined)),
+  runtime: z.enum(['claude', 'codex']).optional(),
   execution_mode: z.enum(['container', 'host']).optional(),
   interaction_mode: InteractionModeSchema.optional(),
   custom_cwd: z
@@ -635,6 +636,23 @@ export const ClaudeConfigSchema = z.object({
   anthropicBaseUrl: z.string(),
   anthropicModel: z.string().max(128).optional(),
 });
+
+export const CodexConfigSchema = z.object({
+  baseUrl: z.string().max(2000).optional(),
+  model: z.string().max(128).optional(),
+  command: z.string().max(256).optional(),
+});
+
+export const CodexSecretsSchema = z
+  .object({
+    apiKey: z.string().max(2000).optional(),
+    clearApiKey: z.boolean().optional(),
+  })
+  .refine(
+    (data) =>
+      typeof data.apiKey === 'string' || data.clearApiKey === true,
+    { message: 'At least one Codex secret field must be provided' },
+  );
 
 export const ClaudeThirdPartyProfileCreateSchema = z.object({
   name: z.string().min(1).max(64),
@@ -1132,6 +1150,33 @@ export const RedeemCodeCreateSchema = z
 export const RedeemCodeSchema = z.object({
   code: z.string().min(1).max(64),
 });
+
+// Memory types
+export interface MemorySource {
+  path: string;
+  label: string;
+  scope: 'user-global' | 'main' | 'flow' | 'session';
+  kind: 'claude' | 'note' | 'session';
+  runtime?: 'claude' | 'codex';
+  writable: boolean;
+  exists: boolean;
+  updatedAt: string | null;
+  size: number;
+  ownerName?: string;
+}
+
+export interface MemoryFilePayload {
+  path: string;
+  content: string;
+  updatedAt: string | null;
+  size: number;
+  writable: boolean;
+}
+
+export interface MemorySearchHit extends MemorySource {
+  hits: number;
+  snippet: string;
+}
 
 // --- Bug Report schemas ---
 

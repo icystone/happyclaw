@@ -63,6 +63,70 @@ chown node:node /home/node/.npmrc 2>/dev/null || true
 # 注意：append 而非 prepend，避免持久化的 npm shim 屏蔽 /app/node_modules/.bin 中 SDK 自带的 claude CLI（见上方第 28-33 行注释）
 export PATH="$PATH:$NPM_GLOBAL_DIR/bin"
 
+# Buffer stdin to file (container requires EOF to flush stdin pipe).
+# Both the Codex fast-path below and the Claude path consume this file.
+cat > /tmp/input.json
+chmod 644 /tmp/input.json
+
+# === Codex mode: run codex CLI directly, skip skills & TypeScript compilation ===
+# Codex containers set HAPPYCLAW_RUNTIME=codex and mount /home/node/.codex.
+# They neither compile agent-runner nor need the managed Chromium browser.
+if [ "${HAPPYCLAW_RUNTIME:-}" = "codex" ]; then
+  # Fix permissions on exit: Codex may create files with mode 0600
+  # (e.g. auth.json), which the host backend (agent user) cannot read.
+  cleanup_codex() {
+    chmod -R a+rwX /home/node/.codex 2>/dev/null || true
+    chmod -R a+rwX /workspace/group 2>/dev/null || true
+  }
+  trap cleanup_codex EXIT
+
+  # Materialize skills into the codex skills dir, reusing the host-resolved
+  # manifest mounted read-only below /workspace/effective-skills.
+  mkdir -p /home/node/.codex/skills
+  if [ -d /workspace/effective-skills ]; then
+    for skill in /workspace/effective-skills/*/; do
+      if [ -f "${skill}SKILL.md" ]; then
+        name=$(basename "$skill")
+        target="/home/node/.codex/skills/$name"
+        if [ -e "$target" ] && [ ! -L "$target" ]; then
+          rm -rf "$target" 2>/dev/null || true
+        fi
+        ln -sfn "$skill" "$target" 2>/dev/null || true
+      fi
+    done
+  fi
+  chown -R node:node /home/node/.codex/skills 2>/dev/null || true
+
+  PROMPT=$(jq -r '.prompt' /tmp/input.json)
+  SESSION_ID=$(jq -r '.sessionId // empty' /tmp/input.json)
+
+  # Extract base64 images to temp files and build -i arguments
+  IMAGE_ARGS=()
+  IMAGE_COUNT=$(jq '.images | length' /tmp/input.json)
+  if [ "$IMAGE_COUNT" -gt 0 ]; then
+    for i in $(seq 0 $((IMAGE_COUNT - 1))); do
+      MIME=$(jq -r ".images[$i].mimeType // \"image/jpeg\"" /tmp/input.json)
+      EXT=".jpg"
+      case "$MIME" in
+        image/png) EXT=".png" ;;
+        image/gif) EXT=".gif" ;;
+        image/webp) EXT=".webp" ;;
+      esac
+      jq -r ".images[$i].data" /tmp/input.json | base64 -d > "/tmp/image-${i}${EXT}"
+      IMAGE_ARGS+=("-i" "/tmp/image-${i}${EXT}")
+    done
+  fi
+
+  if [ -n "$SESSION_ID" ]; then
+    runuser -u node -- codex exec resume --json --skip-git-repo-check "${IMAGE_ARGS[@]}" "$SESSION_ID" "$PROMPT"
+  else
+    runuser -u node -- codex exec --json --skip-git-repo-check "${IMAGE_ARGS[@]}" "$PROMPT"
+  fi
+  exit $?
+fi
+
+# === Claude mode (default path) ===
+
 # Materialize the canonical Skill manifest resolved by the host. Each selected
 # Skill is mounted read-only below /workspace/effective-skills. Completely
 # rebuilding the directory prevents a real Skill directory created by an
@@ -164,10 +228,6 @@ if [ "$CHROMIUM_READY" != true ]; then
   cat "$CHROMIUM_LOG" >&2 2>/dev/null || true
   exit 1
 fi
-
-# Buffer stdin to file (container requires EOF to flush stdin pipe)
-cat > /tmp/input.json
-chmod 644 /tmp/input.json
 
 # Drop privileges and execute agent-runner as node user
 runuser -u node -- node /tmp/dist/index.js < /tmp/input.json

@@ -79,6 +79,7 @@ import type { ClaudeProviderConfig } from './runtime-config.js';
 import {
   loadManagedMcpLayers,
   resolveManagedMcpPolicy,
+  loadUserMcpServers,
   type ManagedMcpLayers,
 } from './mcp-utils.js';
 import {
@@ -103,6 +104,11 @@ import {
   syncHostClaudeContext,
 } from './claude-context-resolver.js';
 import { pluginSkillLayers } from './effective-skill-resolver.js';
+import {
+  getCodexProviderConfig,
+  writeCodexAuthFile,
+  writeCodexConfigFile,
+} from './codex-config.js';
 import { MessageSourceKind, RegisteredGroup, StreamEvent } from './types.js';
 import type {
   AgentProfileRuntimePolicy,
@@ -115,6 +121,13 @@ import {
   resolveHostSkillPolicy,
   type HostSkillPolicy,
 } from './agent-profile-policy.js';
+import {
+  getSessionRuntimeDir,
+  getSessionRuntimeHomeDir,
+  getRuntimeStateDirName,
+  normalizeAgentRuntime,
+} from './agent-runtime.js';
+import type { AgentRuntimeId } from './agent-runtime.js';
 import {
   attachStderrHandler,
   attachStdoutHandler,
@@ -411,6 +424,92 @@ function ensureSettingsJson(
   fs.writeFileSync(projectionFile, projectionContent, { mode: 0o600 });
 }
 
+function mimeTypeToExtension(mimeType?: string): string {
+  switch ((mimeType || '').toLowerCase()) {
+    case 'image/png':
+      return '.png';
+    case 'image/gif':
+      return '.gif';
+    case 'image/webp':
+      return '.webp';
+    case 'image/bmp':
+      return '.bmp';
+    default:
+      return '.jpg';
+  }
+}
+
+function writeCodexInputImages(
+  groupIpcDir: string,
+  images?: Array<{ data: string; mimeType?: string }>,
+): string[] {
+  if (!images?.length) return [];
+  const attachmentsDir = path.join(groupIpcDir, 'attachments');
+  fs.mkdirSync(attachmentsDir, { recursive: true });
+  return images.map((image, index) => {
+    const filePath = path.join(
+      attachmentsDir,
+      `${Date.now()}-${index}${mimeTypeToExtension(image.mimeType)}`,
+    );
+    fs.writeFileSync(filePath, Buffer.from(image.data, 'base64'));
+    return filePath;
+  });
+}
+
+function syncRuntimeSkillsHome(
+  skillsHomeDir: string,
+  options: {
+    projectSkillsDir: string;
+    userSkillsDir?: string | null;
+    selectedSkills?: string[] | null;
+  },
+): void {
+  fs.mkdirSync(skillsHomeDir, { recursive: true });
+
+  const sourceDirs = [
+    options.projectSkillsDir,
+    options.userSkillsDir || null,
+  ].filter((dir): dir is string => !!dir && fs.existsSync(dir));
+
+  const selectedSet =
+    options.selectedSkills === null || options.selectedSkills === undefined
+      ? null
+      : new Set(options.selectedSkills);
+
+  for (const sourceDir of sourceDirs) {
+    for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (!/^[\w.-]+$/.test(entry.name)) continue;
+      if (selectedSet && !selectedSet.has(entry.name)) continue;
+
+      const sourcePath = path.join(sourceDir, entry.name);
+      const skillFile = path.join(sourcePath, 'SKILL.md');
+      const disabledSkillFile = path.join(sourcePath, 'SKILL.md.disabled');
+      if (!fs.existsSync(skillFile) && !fs.existsSync(disabledSkillFile)) {
+        continue;
+      }
+
+      const targetPath = path.join(skillsHomeDir, entry.name);
+      try {
+        if (fs.existsSync(targetPath)) {
+          const stat = fs.lstatSync(targetPath);
+          if (stat.isSymbolicLink()) {
+            fs.unlinkSync(targetPath);
+          } else {
+            // Preserve directories/files managed by Codex itself, such as .system.
+            continue;
+          }
+        }
+        fs.symlinkSync(sourcePath, targetPath, 'dir');
+      } catch (err) {
+        logger.warn(
+          { skillsHomeDir, sourcePath, targetPath, err },
+          'Failed to link runtime skill into session home',
+        );
+      }
+    }
+  }
+}
 export interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -1464,6 +1563,9 @@ export function buildVolumeMounts(
     envLines: [],
     addHostGateway: false,
   },
+  /** Agent runtime for this workspace (claude | codex). Drives the session
+   *  state dir (.claude vs .codex) and which claude-only mounts to skip. */
+  runtime?: AgentRuntimeId,
 ): VolumeMount[] {
   if (group.containerConfigError) {
     throw new AdditionalMountValidationError([
@@ -1521,58 +1623,70 @@ export function buildVolumeMounts(
     });
   }
 
-  // Per-group Claude sessions directory (isolated from other groups)
-  // Sub-agents and task sessions get their own session dir under agents/{id}/.claude/
-  const groupSessionsDir = sessionAgentId
-    ? path.join(
-        DATA_DIR,
-        'sessions',
-        group.folder,
-        'agents',
-        sessionAgentId,
-        '.claude',
-      )
-    : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  // Per-group session state directory (isolated from other groups).
+  // Sub-agents and task sessions get their own dir under agents/{id}/.
+  // Codex uses .codex, Claude uses .claude.
+  const effectiveRuntime = normalizeAgentRuntime(runtime);
+  const stateDirName = getRuntimeStateDirName(runtime);
+  const groupSessionsDir = getSessionRuntimeDir(
+    path.join(DATA_DIR, 'sessions'),
+    group.folder,
+    runtime,
+    sessionAgentId,
+  );
   mkdirForContainer(groupSessionsDir);
-  const userSkillsPolicy = resolveAgentProfileUserSkillsPolicy(
-    ownerId,
-    agentProfile,
-  );
-  const pluginSkills = ownerId ? prepareHostPlugins(ownerId) : [];
-  const claudeContextPlan = buildClaudeContextPlan({
-    executionMode: 'container',
-    group,
-    ownerHomeFolder,
-    externalClaudeDir: getEffectiveExternalDir(),
-    projectRoot,
-    dataDir: DATA_DIR,
-    groupSessionsDir,
-    includeHostClaudeContext: shouldIncludeHostClaudeContext(agentProfile),
-    hostSkillPolicy: resolveAgentProfileHostSkillPolicy(agentProfile),
-    mountUserSkills: mountUserSkills && userSkillsPolicy.mountUserSkills,
-    userSkillsDirOverride: userSkillsPolicy.userSkillsDirOverride,
-    managedSkillPolicy: agentProfile?.runtimePolicy?.skills,
-    pluginSkillLayers: pluginSkillLayers(pluginSkills),
-  });
-  syncHostClaudeContext(claudeContextPlan, groupSessionsDir, {
-    materializeLinks: false,
-  });
-  const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  ensureSettingsJson(
-    settingsFile,
-    resolveRuntimeMcpServers(group, agentProfile),
-    {
-      // The session settings file is HappyClaw-owned. Always replace this map
-      // with the resolved layers so removed/unselected managed MCP cannot
-      // survive from a previous Agent run.
-      replaceMcpServers: true,
-      baseSettings: loadHostClaudeSettings(claudeContextPlan),
-    },
-  );
+
+  // Codex runs `codex exec` directly (see entrypoint.sh); it does not use the
+  // Claude context plan or SDK settings.json. Auth/config files are written by
+  // runCodexContainerAgent into this same session dir. For Claude, build the
+  // full context plan and settings.json.
+  const claudeContextPlan =
+    effectiveRuntime === 'codex'
+      ? null
+      : buildClaudeContextPlan({
+          executionMode: 'container',
+          group,
+          ownerHomeFolder,
+          externalClaudeDir: getEffectiveExternalDir(),
+          projectRoot,
+          dataDir: DATA_DIR,
+          groupSessionsDir,
+          includeHostClaudeContext: shouldIncludeHostClaudeContext(agentProfile),
+          hostSkillPolicy: resolveAgentProfileHostSkillPolicy(agentProfile),
+          mountUserSkills:
+            mountUserSkills &&
+            resolveAgentProfileUserSkillsPolicy(ownerId, agentProfile)
+              .mountUserSkills,
+          userSkillsDirOverride: resolveAgentProfileUserSkillsPolicy(
+            ownerId,
+            agentProfile,
+          ).userSkillsDirOverride,
+          managedSkillPolicy: agentProfile?.runtimePolicy?.skills,
+          pluginSkillLayers: pluginSkillLayers(
+            ownerId ? prepareHostPlugins(ownerId) : [],
+          ),
+        });
+  if (claudeContextPlan) {
+    syncHostClaudeContext(claudeContextPlan, groupSessionsDir, {
+      materializeLinks: false,
+    });
+    const settingsFile = path.join(groupSessionsDir, 'settings.json');
+    ensureSettingsJson(
+      settingsFile,
+      resolveRuntimeMcpServers(group, agentProfile),
+      {
+        // The session settings file is HappyClaw-owned. Always replace this map
+        // with the resolved layers so removed/unselected managed MCP cannot
+        // survive from a previous Agent run.
+        replaceMcpServers: true,
+        baseSettings: loadHostClaudeSettings(claudeContextPlan),
+      },
+    );
+  }
 
   mounts.push({
     hostPath: groupSessionsDir,
-    containerPath: '/home/node/.claude',
+    containerPath: `/home/node/${stateDirName}`,
     readonly: false,
   });
 
@@ -1589,16 +1703,19 @@ export function buildVolumeMounts(
     /* not found, ok */
   }
 
-  // 挂载精简版 .claude.json（剥离 cachedGrowthBookFeatures），保留 deviceId 一致性
-  const containerJson = getContainerClaudeJsonPath();
-  mounts.push({
-    hostPath: containerJson,
-    containerPath: '/home/node/.claude.json',
-    readonly: true,
-  });
+  // 挂载精简版 .claude.json（剥离 cachedGrowthBookFeatures），保留 deviceId 一致性。
+  // Codex 不使用 Claude CLI 身份文件，跳过。
+  if (effectiveRuntime !== 'codex') {
+    const containerJson = getContainerClaudeJsonPath();
+    mounts.push({
+      hostPath: containerJson,
+      containerPath: '/home/node/.claude.json',
+      readonly: true,
+    });
+  }
 
   // Skills are exposed only through explicit per-Skill read-only mounts below.
-  const userSkillsDir = claudeContextPlan.userSkillsDir ?? null;
+  const userSkillsDir = claudeContextPlan?.userSkillsDir ?? null;
 
   // Ensure user skills directory exists so it can always be mounted.
   // Skills may be installed after the group is created; without pre-creating,
@@ -1610,20 +1727,22 @@ export function buildVolumeMounts(
   // Every selected Skill gets an explicit read-only mount. entrypoint rebuilds
   // /home/node/.claude/skills exclusively from this directory, so a real
   // directory persisted by an earlier container can never survive a restart.
-  for (const skill of claudeContextPlan.effectiveSkills.selected) {
-    if (skill.source === 'plugin') continue;
-    let hostPath = skill.path;
-    try {
-      hostPath = fs.realpathSync(hostPath);
-    } catch {
-      // The resolver already validated SKILL.md. Keep the original path so
-      // Docker reports a deterministic mount error if it vanished afterward.
+  if (claudeContextPlan) {
+    for (const skill of claudeContextPlan.effectiveSkills.selected) {
+      if (skill.source === 'plugin') continue;
+      let hostPath = skill.path;
+      try {
+        hostPath = fs.realpathSync(hostPath);
+      } catch {
+        // The resolver already validated SKILL.md. Keep the original path so
+        // Docker reports a deterministic mount error if it vanished afterward.
+      }
+      mounts.push({
+        hostPath,
+        containerPath: `/workspace/effective-skills/${skill.id}`,
+        readonly: true,
+      });
     }
-    mounts.push({
-      hostPath,
-      containerPath: `/workspace/effective-skills/${skill.id}`,
-      readonly: true,
-    });
   }
 
   // Per-user native feishu-cli state (profiles, token.json, config.yaml).
@@ -1802,40 +1921,44 @@ export function buildVolumeMounts(
     });
   }
 
-  // Write .credentials.json for OAuth credentials (session dir is already mounted)
-  const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
-  const clearSessionOAuth =
-    !!mergedConfig.anthropicBaseUrl ||
-    hasExplicitWorkspaceClaudeAuth(containerOverride);
-  if (clearSessionOAuth) {
-    // An explicit workspace key/token is authoritative even when the endpoint
-    // remains Anthropic's official URL. A prior OAuth session must not win.
-    clearSessionClaudeOAuthFiles(groupSessionsDir);
-  }
-  if (mergedConfig.claudeOAuthCredentials) {
-    try {
-      writeCredentialsFile(groupSessionsDir, mergedConfig);
-    } catch (err) {
-      logger.warn(
-        { group: group.name, err },
-        'Failed to write .credentials.json',
-      );
+  // Claude-specific: OAuth credentials & agent-runner source (Codex skips these,
+  // it runs `codex exec` directly and has no SDK session credentials).
+  if (effectiveRuntime !== 'codex') {
+    // Write .credentials.json for OAuth credentials (session dir is already mounted)
+    const mergedConfig = mergeClaudeEnvConfig(globalConfig, containerOverride);
+    const clearSessionOAuth =
+      !!mergedConfig.anthropicBaseUrl ||
+      hasExplicitWorkspaceClaudeAuth(containerOverride);
+    if (clearSessionOAuth) {
+      // An explicit workspace key/token is authoritative even when the endpoint
+      // remains Anthropic's official URL. A prior OAuth session must not win.
+      clearSessionClaudeOAuthFiles(groupSessionsDir);
     }
-  }
+    if (mergedConfig.claudeOAuthCredentials) {
+      try {
+        writeCredentialsFile(groupSessionsDir, mergedConfig);
+      } catch (err) {
+        logger.warn(
+          { group: group.name, err },
+          'Failed to write .credentials.json',
+        );
+      }
+    }
 
-  // Mount agent-runner source from host — recompiled on container startup.
-  // Bypasses Docker 镜像构建缓存，确保代码变更生效。
-  const agentRunnerSrc = path.join(
-    projectRoot,
-    'container',
-    'agent-runner',
-    'src',
-  );
-  mounts.push({
-    hostPath: agentRunnerSrc,
-    containerPath: '/app/src',
-    readonly: true,
-  });
+    // Mount agent-runner source from host — recompiled on container startup.
+    // Bypasses Docker 镜像构建缓存，确保代码变更生效。
+    const agentRunnerSrc = path.join(
+      projectRoot,
+      'container',
+      'agent-runner',
+      'src',
+    );
+    mounts.push({
+      hostPath: agentRunnerSrc,
+      containerPath: '/app/src',
+      readonly: true,
+    });
+  }
 
   // Prompts must ride along with the source for the same reason: the image
   // bakes a copy at build time, so a prompt file added after the last image
@@ -1852,7 +1975,7 @@ export function buildVolumeMounts(
   // Native Claude user config overlays the isolated session config. Workspace
   // remains the SDK cwd; these read-only mounts provide the same user-level
   // capabilities without redirecting file and shell operations into ~/.claude.
-  if (claudeContextPlan.isAdminOwned) {
+  if (claudeContextPlan?.isAdminOwned) {
     if (
       claudeContextPlan.claudeMdSource &&
       fs.existsSync(claudeContextPlan.claudeMdSource)
@@ -2117,6 +2240,7 @@ export function buildContainerArgs(
   tz: string,
   hostIdentity: ContainerHostIdentity = detectContainerHostIdentity(),
   networkConfig: ContainerNetworkConfig = { addHostGateway: false },
+  extraEnv?: Record<string, string>,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -2137,6 +2261,14 @@ export function buildContainerArgs(
   if (networkConfig.addHostGateway) {
     args.push('--add-host', 'host.docker.internal:host-gateway');
   }
+
+  // Extra environment variables passed via Docker -e flags (e.g. HAPPYCLAW_RUNTIME=codex)
+  if (extraEnv) {
+    for (const [key, value] of Object.entries(extraEnv)) {
+      args.push('-e', `${key}=${value}`);
+    }
+  }
+
 
   // Docker: -v with :ro suffix for readonly
   for (const mount of mounts) {
@@ -2688,6 +2820,445 @@ export async function runContainerAgent(
   }
 }
 
+/**
+ * Run Codex agent in Docker container.
+ * Similar to runContainerAgent but uses Codex CLI instead of agent-runner,
+ * parses JSON lines output instead of OUTPUT_MARKER format.
+ */
+export async function runCodexContainerAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (
+    proc: ChildProcess,
+    containerName: string,
+    selectedProviderId: string | null,
+  ) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+  ownerHomeFolder?: string,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+
+  // Validate Codex config
+  const codexConfig = getCodexProviderConfig();
+  if (!codexConfig.apiKey.trim()) {
+    return {
+      status: 'error',
+      result: 'Codex 未配置 API Key，请先在设置中完成 Codex 配置。',
+      error: 'Codex API key not configured',
+    };
+  }
+
+  const groupDir = path.join(GROUPS_DIR, group.folder);
+  mkdirForContainer(groupDir);
+
+  const isAdminHome = !!group.is_home && group.folder === 'main';
+  const mounts = buildVolumeMounts(
+    group,
+    isAdminHome,
+    !!group.created_by,
+    group.selected_skills ?? null,
+    input.agentId,
+    ownerHomeFolder,
+    input.taskRunId,
+    undefined,
+    'codex',
+  );
+
+  // Write Codex auth & config files to the session dir (created by buildVolumeMounts)
+  const sessionsRoot = path.join(DATA_DIR, 'sessions');
+  const groupSessionsDir = getSessionRuntimeDir(
+    sessionsRoot,
+    group.folder,
+    'codex',
+    input.agentId,
+  );
+  writeCodexAuthFile(groupSessionsDir, codexConfig.apiKey);
+  writeCodexConfigFile(groupSessionsDir, codexConfig, {
+    sandboxMode: 'workspace-write',
+  });
+
+  const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
+  const agentSuffix = input.agentId
+    ? `-${input.agentId.replace(/[^a-zA-Z0-9-]/g, '-')}`
+    : '';
+  const containerName = `happyclaw-codex-${safeName}${agentSuffix}-${Date.now()}`;
+  const containerArgs = buildContainerArgs(mounts, containerName, {
+    HAPPYCLAW_RUNTIME: 'codex',
+  });
+
+  logger.info(
+    {
+      group: group.name,
+      containerName,
+      runtime: 'codex',
+      mountCount: mounts.length,
+    },
+    'Spawning Codex container agent',
+  );
+
+  const logsDir = path.join(GROUPS_DIR, group.folder, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let finalText: string | null = null;
+    let threadId = input.sessionId;
+    let parseBuffer = '';
+    let timedOut = false;
+    let outputChain: Promise<void> = Promise.resolve();
+
+    const resolveOnce = (output: ContainerOutput): void => {
+      if (settled) return;
+      settled = true;
+      resolve(output);
+    };
+
+    const container = spawn('docker', containerArgs, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    onProcess(container, containerName, null);
+
+    // Write input and close stdin
+    container.stdin.on('error', (err) => {
+      logger.error(
+        { group: group.name, err },
+        'Codex container stdin write failed',
+      );
+      container.kill();
+    });
+    container.stdin.write(JSON.stringify(input));
+    container.stdin.end();
+
+    const timeoutMs =
+      group.containerConfig?.timeout || getSystemSettings().containerTimeout;
+
+    const killOnTimeout = () => {
+      timedOut = true;
+      logger.error(
+        { group: group.name, containerName },
+        'Codex container timeout, stopping gracefully',
+      );
+      execFile(
+        'docker',
+        ['stop', containerName],
+        { timeout: 15000 },
+        (err) => {
+          if (err) {
+            logger.warn(
+              { group: group.name, containerName, err },
+              'Graceful stop failed, force killing',
+            );
+            container.kill('SIGKILL');
+          }
+        },
+      );
+    };
+
+    let timeout = setTimeout(killOnTimeout, timeoutMs);
+
+    const resetTimeout = () => {
+      clearTimeout(timeout);
+      timeout = setTimeout(killOnTimeout, timeoutMs);
+    };
+
+    const emit = async (output: ContainerOutput) => {
+      if (output.newSessionId) threadId = output.newSessionId;
+      if (onOutput) await onOutput(output);
+    };
+
+    // Parse Codex JSON line events (same protocol as runCodexHostAgent)
+    const handleEvent = async (line: string) => {
+      if (!line.trim()) return;
+      const parsed = JSON.parse(line) as Record<string, any>;
+      switch (parsed.type) {
+        case 'thread.started':
+          if (typeof parsed.thread_id === 'string') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: parsed.thread_id,
+              streamEvent: {
+                eventType: 'init',
+                sessionId: parsed.thread_id,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'turn.started':
+          await emit({
+            status: 'stream',
+            result: null,
+            newSessionId: threadId,
+            streamEvent: {
+              eventType: 'status',
+              sessionId: threadId,
+              turnId: input.turnId,
+              statusText: 'running',
+              isSynthetic: true,
+            },
+          });
+          break;
+        case 'item.started':
+          if (parsed.item?.type === 'command_execution') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'tool_use_start',
+                toolName: 'Bash',
+                toolUseId: parsed.item.id,
+                toolInputSummary: parsed.item.command,
+                toolInput: { command: parsed.item.command },
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'item.completed':
+          if (parsed.item?.type === 'agent_message') {
+            finalText =
+              typeof parsed.item.text === 'string'
+                ? parsed.item.text
+                : finalText;
+            if (finalText) {
+              await emit({
+                status: 'stream',
+                result: null,
+                newSessionId: threadId,
+                streamEvent: {
+                  eventType: 'text_delta',
+                  text: finalText,
+                  sessionId: threadId,
+                  turnId: input.turnId,
+                  isSynthetic: true,
+                },
+              });
+            }
+          } else if (
+            parsed.item?.type === 'reasoning' &&
+            typeof parsed.item.text === 'string'
+          ) {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'thinking_delta',
+                text: parsed.item.text,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          } else if (parsed.item?.type === 'command_execution') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'tool_use_end',
+                toolName: 'Bash',
+                toolUseId: parsed.item.id,
+                toolInputSummary: parsed.item.command,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          } else if (
+            parsed.item?.type === 'error' &&
+            typeof parsed.item.message === 'string'
+          ) {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'status',
+                statusText: parsed.item.message,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'turn.completed':
+          if (parsed.usage) {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'usage',
+                usage: {
+                  inputTokens: Number(parsed.usage.input_tokens) || 0,
+                  outputTokens: Number(parsed.usage.output_tokens) || 0,
+                  reasoningTokens:
+                    Number(parsed.usage.reasoning_output_tokens) || 0,
+                  cacheReadInputTokens:
+                    Number(parsed.usage.cached_input_tokens) || 0,
+                  cacheCreationInputTokens: 0,
+                  costUSD: 0,
+                  durationMs: Date.now() - startTime,
+                  numTurns: 1,
+                },
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'error':
+          if (typeof parsed.message === 'string') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'status',
+                statusText: parsed.message,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+      }
+    };
+
+    // Parse JSON lines from Docker stdout (Codex outputs one JSON object per line)
+    container.stdout.on('data', (data: Buffer) => {
+      resetTimeout();
+      parseBuffer += data.toString();
+      let newlineIndex = parseBuffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = parseBuffer.slice(0, newlineIndex);
+        parseBuffer = parseBuffer.slice(newlineIndex + 1);
+        outputChain = outputChain
+          .then(() => handleEvent(line))
+          .catch((err) => {
+            logger.warn(
+              { group: group.name, err },
+              'Failed to parse Codex JSON event',
+            );
+          });
+        newlineIndex = parseBuffer.indexOf('\n');
+      }
+    });
+
+    let stderr = '';
+    container.stderr.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    container.on('close', (code, signal) => {
+      clearTimeout(timeout);
+      if (parseBuffer.trim()) {
+        outputChain = outputChain.then(() => handleEvent(parseBuffer.trim()));
+      }
+      outputChain.finally(() => {
+        const duration = Date.now() - startTime;
+        logger.info(
+          { group: group.name, containerName, code, duration },
+          'Codex container exited',
+        );
+
+        if (timedOut) {
+          const timeoutOutput: ContainerOutput = {
+            status: 'error',
+            result: 'Codex 容器运行超时',
+            error: 'Codex container timed out',
+            newSessionId: threadId,
+          };
+          if (onOutput) {
+            Promise.resolve(onOutput(timeoutOutput))
+              .catch((err) => {
+                logger.warn(
+                  { group: group.name, err },
+                  'Codex timeout onOutput failed',
+                );
+              })
+              .finally(() => resolveOnce(timeoutOutput));
+            return;
+          }
+          resolveOnce(timeoutOutput);
+          return;
+        }
+
+        if (code === 0) {
+          const successOutput: ContainerOutput = {
+            status: 'success',
+            result: finalText,
+            newSessionId: threadId,
+            sourceKind: 'legacy',
+            finalizationReason: 'completed',
+          };
+          if (onOutput) {
+            Promise.resolve(onOutput(successOutput))
+              .catch((err) => {
+                logger.warn(
+                  { group: group.name, err },
+                  'Codex success onOutput failed',
+                );
+              })
+              .finally(() => resolveOnce(successOutput));
+            return;
+          }
+          resolveOnce(successOutput);
+          return;
+        }
+
+        if (stderr.trim()) {
+          logger.error(
+            { group: group.name, containerName, stderr: stderr.slice(-500) },
+            'Codex container stderr',
+          );
+        }
+
+        const errorOutput: ContainerOutput = {
+          status: 'error',
+          result: finalText,
+          error:
+            stderr.trim() ||
+            `Codex container exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`,
+          newSessionId: threadId,
+        };
+        if (onOutput) {
+          Promise.resolve(onOutput(errorOutput))
+            .catch((err) => {
+              logger.warn(
+                { group: group.name, err },
+                'Codex error onOutput failed',
+              );
+            })
+            .finally(() => resolveOnce(errorOutput));
+          return;
+        }
+        resolveOnce(errorOutput);
+      });
+    });
+
+    container.on('error', (err) => {
+      clearTimeout(timeout);
+      resolveOnce({
+        status: 'error',
+        result: null,
+        error: `Codex container spawn error: ${err.message}`,
+        newSessionId: threadId,
+      });
+    });
+  });
+}
+
 export function writeTasksSnapshot(
   groupFolder: string,
   isAdminHome: boolean,
@@ -2787,6 +3358,395 @@ export function killProcessTree(
   return false;
 }
 
+async function runCodexHostAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (
+    proc: ChildProcess,
+    identifier: string,
+    selectedProviderId: string | null,
+  ) => void,
+  onOutput: ((output: ContainerOutput) => Promise<void>) | undefined,
+  groupDir: string,
+  groupIpcDir: string,
+  groupSessionHomeDir: string,
+  groupSessionsDir: string,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+  const codexConfig = getCodexProviderConfig();
+  if (!codexConfig.apiKey.trim()) {
+    return {
+      status: 'error',
+      result: 'Codex 未配置 API Key，请先在设置中完成 Codex 配置。',
+      error: 'Codex API key not configured',
+    };
+  }
+
+  writeCodexAuthFile(groupSessionsDir, codexConfig.apiKey);
+  writeCodexConfigFile(groupSessionsDir, codexConfig, {
+    sandboxMode:
+      (group.executionMode || 'container') === 'host'
+        ? 'danger-full-access'
+        : 'workspace-write',
+  });
+
+  syncRuntimeSkillsHome(path.join(groupSessionsDir, 'skills'), {
+    projectSkillsDir: path.join(process.cwd(), 'container', 'skills'),
+    userSkillsDir: group.created_by
+      ? path.join(DATA_DIR, 'skills', group.created_by)
+      : null,
+    selectedSkills: group.selected_skills ?? null,
+  });
+
+  const hostEnv: Record<string, string> = {
+    ...(process.env as Record<string, string>),
+    HOME: groupSessionHomeDir,
+  };
+  delete hostEnv.OPENAI_API_KEY;
+  delete hostEnv.OPENAI_BASE_URL;
+  delete hostEnv.CODEX_HOME;
+
+  const imagePaths = writeCodexInputImages(groupIpcDir, input.images);
+  const imageArgs = imagePaths.flatMap((imagePath) => ['-i', imagePath]);
+  const codexArgs = input.sessionId
+    ? [
+        'exec',
+        'resume',
+        '--json',
+        '--skip-git-repo-check',
+        ...imageArgs,
+        input.sessionId,
+        input.prompt,
+      ]
+    : [
+        'exec',
+        '--json',
+        '--skip-git-repo-check',
+        ...imageArgs,
+        input.prompt,
+      ];
+
+  // Support custom command prefix (e.g. "sc codex" → spawn('sc', ['codex', ...args]))
+  const commandParts = (codexConfig.command || 'codex')
+    .split(/\s+/)
+    .filter(Boolean);
+  const [bin, ...prefixArgs] = commandParts;
+  const args = [...prefixArgs, ...codexArgs];
+
+  logger.info(
+    {
+      group: group.name,
+      runtime: 'codex',
+      command: codexConfig.command || 'codex',
+      workingDir: groupDir,
+      resumed: !!input.sessionId,
+    },
+    'Spawning Codex host agent',
+  );
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let finalText: string | null = null;
+    let threadId = input.sessionId;
+    let parseBuffer = '';
+    let stderr = '';
+    let timedOut = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    let outputChain: Promise<void> = Promise.resolve();
+
+    const resolveOnce = (output: ContainerOutput): void => {
+      if (settled) return;
+      settled = true;
+      resolve(output);
+    };
+
+    const proc = spawn(bin, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: hostEnv,
+      cwd: groupDir,
+      detached: true,
+    });
+
+    const processId = `codex-${group.folder}-${Date.now()}`;
+    onProcess(proc, processId, null);
+
+    const timeoutMs =
+      group.containerConfig?.timeout || getSystemSettings().containerTimeout;
+    const resetTimeout = () => {
+      if (timeout) clearTimeout(timeout);
+      timeout = setTimeout(() => {
+        timedOut = true;
+        killProcessTree(proc, 'SIGTERM');
+        setTimeout(() => {
+          if (proc.exitCode === null && proc.signalCode === null) {
+            killProcessTree(proc, 'SIGKILL');
+          }
+        }, 5000);
+      }, timeoutMs);
+    };
+    resetTimeout();
+
+    const emit = async (output: ContainerOutput) => {
+      if (output.newSessionId) threadId = output.newSessionId;
+      if (onOutput) await onOutput(output);
+    };
+
+    const handleEvent = async (line: string) => {
+      if (!line.trim()) return;
+      const parsed = JSON.parse(line) as Record<string, any>;
+      switch (parsed.type) {
+        case 'thread.started':
+          if (typeof parsed.thread_id === 'string') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: parsed.thread_id,
+              streamEvent: {
+                eventType: 'init',
+                sessionId: parsed.thread_id,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'turn.started':
+          await emit({
+            status: 'stream',
+            result: null,
+            newSessionId: threadId,
+            streamEvent: {
+              eventType: 'status',
+              sessionId: threadId,
+              turnId: input.turnId,
+              statusText: 'running',
+              isSynthetic: true,
+            },
+          });
+          break;
+        case 'item.started':
+          if (parsed.item?.type === 'command_execution') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'tool_use_start',
+                toolName: 'Bash',
+                toolUseId: parsed.item.id,
+                toolInputSummary: parsed.item.command,
+                toolInput: { command: parsed.item.command },
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'item.completed':
+          if (parsed.item?.type === 'agent_message') {
+            finalText = typeof parsed.item.text === 'string' ? parsed.item.text : finalText;
+            if (finalText) {
+              await emit({
+                status: 'stream',
+                result: null,
+                newSessionId: threadId,
+                streamEvent: {
+                  eventType: 'text_delta',
+                  text: finalText,
+                  sessionId: threadId,
+                  turnId: input.turnId,
+                  isSynthetic: true,
+                },
+              });
+            }
+          } else if (parsed.item?.type === 'reasoning' && typeof parsed.item.text === 'string') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'thinking_delta',
+                text: parsed.item.text,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          } else if (parsed.item?.type === 'command_execution') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'tool_use_end',
+                toolName: 'Bash',
+                toolUseId: parsed.item.id,
+                toolInputSummary: parsed.item.command,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          } else if (parsed.item?.type === 'error' && typeof parsed.item.message === 'string') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'status',
+                statusText: parsed.item.message,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'turn.completed':
+          if (parsed.usage) {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'usage',
+                usage: {
+                  inputTokens: Number(parsed.usage.input_tokens) || 0,
+                  outputTokens: Number(parsed.usage.output_tokens) || 0,
+                  reasoningTokens:
+                    Number(parsed.usage.reasoning_output_tokens) || 0,
+                  cacheReadInputTokens:
+                    Number(parsed.usage.cached_input_tokens) || 0,
+                  cacheCreationInputTokens: 0,
+                  costUSD: 0,
+                  durationMs: Date.now() - startTime,
+                  numTurns: 1,
+                },
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+        case 'error':
+          if (typeof parsed.message === 'string') {
+            await emit({
+              status: 'stream',
+              result: null,
+              newSessionId: threadId,
+              streamEvent: {
+                eventType: 'status',
+                statusText: parsed.message,
+                sessionId: threadId,
+                turnId: input.turnId,
+                isSynthetic: true,
+              },
+            });
+          }
+          break;
+      }
+    };
+
+    proc.stdout.on('data', (data) => {
+      resetTimeout();
+      parseBuffer += data.toString();
+      let newlineIndex = parseBuffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = parseBuffer.slice(0, newlineIndex);
+        parseBuffer = parseBuffer.slice(newlineIndex + 1);
+        outputChain = outputChain
+          .then(() => handleEvent(line))
+          .catch((err) => {
+            logger.warn(
+              { group: group.name, err },
+              'Failed to parse Codex JSON event',
+            );
+          });
+        newlineIndex = parseBuffer.indexOf('\n');
+      }
+    });
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', (code, signal) => {
+      if (timeout) clearTimeout(timeout);
+      if (parseBuffer.trim()) {
+        outputChain = outputChain.then(() => handleEvent(parseBuffer.trim()));
+      }
+      outputChain.finally(() => {
+        if (timedOut) {
+          const timeoutOutput: ContainerOutput = {
+            status: 'error',
+            result: 'Codex 运行超时',
+            error: 'Codex timed out',
+            newSessionId: threadId,
+          };
+          if (onOutput) {
+            Promise.resolve(onOutput(timeoutOutput))
+              .catch((err) => {
+                logger.warn({ group: group.name, err }, 'Codex timeout onOutput failed');
+              })
+              .finally(() => resolveOnce(timeoutOutput));
+            return;
+          }
+          resolveOnce(timeoutOutput);
+          return;
+        }
+        if (code === 0) {
+          const successOutput: ContainerOutput = {
+            status: 'success',
+            result: finalText,
+            newSessionId: threadId,
+            sourceKind: 'legacy',
+            finalizationReason: 'completed',
+          };
+          if (onOutput) {
+            Promise.resolve(onOutput(successOutput))
+              .catch((err) => {
+                logger.warn({ group: group.name, err }, 'Codex success onOutput failed');
+              })
+              .finally(() => resolveOnce(successOutput));
+            return;
+          }
+          resolveOnce(successOutput);
+          return;
+        }
+        const errorOutput: ContainerOutput = {
+          status: 'error',
+          result: finalText,
+          error:
+            stderr.trim() ||
+            `Codex exited with code ${code ?? 'null'} signal ${signal ?? 'null'}`,
+          newSessionId: threadId,
+        };
+        if (onOutput) {
+          Promise.resolve(onOutput(errorOutput))
+            .catch((err) => {
+              logger.warn({ group: group.name, err }, 'Codex error onOutput failed');
+            })
+            .finally(() => resolveOnce(errorOutput));
+          return;
+        }
+        resolveOnce(errorOutput);
+      });
+    });
+
+    proc.on('error', (err) => {
+      if (timeout) clearTimeout(timeout);
+      resolveOnce({
+        status: 'error',
+        result: null,
+        error: `Codex spawn error: ${err.message}`,
+        newSessionId: threadId,
+      });
+    });
+  });
+}
+
 /**
  * Run agent directly on the host machine (no Docker container).
  * Used for host execution mode — the agent gets full access to the host filesystem.
@@ -2804,6 +3764,7 @@ export async function runHostAgent(
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
   const sessionAgentId = input.sessionAgentId ?? input.agentId;
+  const runtime = normalizeAgentRuntime(group.runtime);
   const setupInstallHint = 'npm --prefix container/agent-runner install';
   const setupBuildHint = 'npm --prefix container/agent-runner run build';
   const hostModeSetupError = (message: string): ContainerOutput => ({
@@ -2921,17 +3882,35 @@ export async function runHostAgent(
     mode: 0o700,
   });
 
-  const groupSessionsDir = sessionAgentId
-    ? path.join(
-        DATA_DIR,
-        'sessions',
-        group.folder,
-        'agents',
-        sessionAgentId,
-        '.claude',
-      )
-    : path.join(DATA_DIR, 'sessions', group.folder, '.claude');
+  const sessionsRoot = path.join(DATA_DIR, 'sessions');
+  const groupSessionHomeDir = getSessionRuntimeHomeDir(
+    sessionsRoot,
+    group.folder,
+    sessionAgentId,
+  );
+  const groupSessionsDir = getSessionRuntimeDir(
+    sessionsRoot,
+    group.folder,
+    runtime,
+    sessionAgentId,
+  );
+  fs.mkdirSync(groupSessionHomeDir, { recursive: true });
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+
+  // Codex host mode runs `codex exec` directly and needs none of the Claude
+  // context/skills/settings machinery below.
+  if (runtime === 'codex') {
+    return runCodexHostAgent(
+      group,
+      input,
+      onProcess,
+      onOutput,
+      groupDir,
+      groupIpcDir,
+      groupSessionHomeDir,
+      groupSessionsDir,
+    );
+  }
 
   // Symlink .claude.json 到宿主机 ~/.claude.json，确保 deviceId 一致
   const localJson = path.join(groupSessionsDir, '.claude.json');
@@ -2970,6 +3949,8 @@ export async function runHostAgent(
   hostClaudeContextPlan.audit.claudeMd.status =
     hostClaudeContextSync.claudeMdStatus;
   hostClaudeContextPlan.audit.warnings = hostClaudeContextSync.warnings;
+  // 3. 写入 settings.json（合并模式，不覆盖已有用户配置）
+  // Load user's global MCP servers (same logic as Docker mode).
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
   ensureSettingsJson(
     settingsFile,

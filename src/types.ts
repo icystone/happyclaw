@@ -1,4 +1,5 @@
 import type { StreamEvent, WorkflowRunSnapshot } from './stream-event.types.js';
+import type { AgentRuntimeId } from './agent-runtime.js';
 
 export interface AdditionalMount {
   hostPath: string; // Absolute canonical path on host
@@ -178,6 +179,7 @@ export interface RegisteredGroup {
   added_at: string;
   /** Provider-hosted avatar URL for an external IM chat. */
   avatar_url?: string;
+  runtime?: AgentRuntimeId;
   containerConfig?: ContainerConfig;
   /** Invalid persisted JSON is retained as a runtime safety block, never ignored. */
   containerConfigError?: string;
