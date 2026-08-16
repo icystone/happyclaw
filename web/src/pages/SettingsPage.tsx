@@ -6,6 +6,8 @@ import { toast } from 'sonner';
 import { useAuthStore } from '../stores/auth';
 import { SettingsNav } from '../components/settings/SettingsNav';
 import { ClaudeProviderSection } from '../components/settings/ClaudeProviderSection';
+import { CodexProviderSection } from '../components/settings/CodexProviderSection';
+import { DefaultRuntimeSection } from '../components/settings/DefaultRuntimeSection';
 import { RegistrationSection } from '../components/settings/RegistrationSection';
 import { ProfileSection } from '../components/settings/ProfileSection';
 import { PreferencesSection } from '../components/settings/PreferencesSection';
@@ -251,10 +253,20 @@ export function SettingsPage() {
               ) : (
                 <>
                   {activeTab === 'claude' && (
-                    <ClaudeProviderSection
-                      setNotice={(message) => message && toast.success(message)}
-                      setError={(message) => message && toast.error(message)}
-                    />
+                    <div className="space-y-6">
+                      <DefaultRuntimeSection
+                        setNotice={(message) => message && toast.success(message)}
+                        setError={(message) => message && toast.error(message)}
+                      />
+                      <ClaudeProviderSection
+                        setNotice={(message) => message && toast.success(message)}
+                        setError={(message) => message && toast.error(message)}
+                      />
+                      <CodexProviderSection
+                        setNotice={(message) => message && toast.success(message)}
+                        setError={(message) => message && toast.error(message)}
+                      />
+                    </div>
                   )}
                   {activeTab === 'registration' && (
                     <div className="space-y-8">

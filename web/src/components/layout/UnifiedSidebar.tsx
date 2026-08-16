@@ -181,6 +181,7 @@ export function UnifiedSidebar({
             name={g.name}
             folder={g.folder}
             lastMessage={g.lastMessage}
+            runtime={g.runtime}
             isActive={currentGroup === g.jid}
             isHome={false}
             isPinned={!!g.pinned_at}
@@ -210,6 +211,7 @@ export function UnifiedSidebar({
             name={g.name}
             folder={g.folder}
             lastMessage={g.lastMessage}
+            runtime={g.runtime}
             isActive={currentGroup === g.jid}
             isHome={!!g.is_my_home}
             isPinned={!!g.pinned_at}

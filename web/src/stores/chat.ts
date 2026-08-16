@@ -2296,6 +2296,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   createFlow: async (name: string, options?: CreateWorkspaceOptions) => {
     try {
       const body: Record<string, unknown> = { name };
+      if (options?.runtime) body.runtime = options.runtime;
       if (options?.execution_mode) body.execution_mode = options.execution_mode;
       if (options?.custom_cwd) body.custom_cwd = options.custom_cwd;
       if (options?.init_source_path)

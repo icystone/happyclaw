@@ -5,6 +5,8 @@ import {
   AlertTriangle,
   Monitor,
   Box,
+  Cpu,
+  ShieldCheck,
   FolderInput,
   GitBranch,
   Loader2,
@@ -108,6 +110,7 @@ export function CreateContainerDialog({
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [runtime, setRuntime] = useState<'claude' | 'codex'>('claude');
   const [executionMode, setExecutionMode] = useState<'container' | 'host'>(
     'container',
   );
@@ -194,6 +197,7 @@ export function CreateContainerDialog({
   const reset = () => {
     setName('');
     setAdvancedOpen(false);
+    setRuntime('claude');
     setExecutionMode(canHostExec && adminHostOnlyMode ? 'host' : 'container');
     setCustomCwd('');
     setInitMode('empty');
@@ -235,7 +239,7 @@ export function CreateContainerDialog({
     clearSubmissionErrors();
     setLoading(true);
     try {
-      const options: CreateWorkspaceOptions = {};
+      const options: CreateWorkspaceOptions = { runtime };
       if (executionMode === 'host' && canHostExec) {
         options.execution_mode = 'host';
         if (customCwd.trim()) options.custom_cwd = customCwd.trim();
@@ -440,6 +444,46 @@ export function CreateContainerDialog({
             </button>
             {advancedOpen && (
               <div className="px-3 pb-3 space-y-3 border-t">
+                <div className="pt-3">
+                  <label className="block text-sm font-medium mb-2">Agent Runtime</label>
+                  <div className="space-y-2">
+                    <label className="flex items-start gap-3 p-2 rounded-lg border cursor-pointer hover:bg-accent/50 transition-colors">
+                      <input
+                        type="radio"
+                        name="runtime"
+                        value="claude"
+                        checked={runtime === 'claude'}
+                        onChange={() => setRuntime('claude')}
+                        className="mt-0.5 accent-primary"
+                      />
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <ShieldCheck className="w-4 h-4 text-muted-foreground" />
+                          <span className="text-sm font-medium">Claude Code</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">兼容当前默认执行链路</p>
+                      </div>
+                    </label>
+                    <label className="flex items-start gap-3 p-2 rounded-lg border cursor-pointer hover:bg-accent/50 transition-colors">
+                      <input
+                        type="radio"
+                        name="runtime"
+                        value="codex"
+                        checked={runtime === 'codex'}
+                        onChange={() => setRuntime('codex')}
+                        className="mt-0.5 accent-primary"
+                      />
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <Cpu className="w-4 h-4 text-muted-foreground" />
+                          <span className="text-sm font-medium">Codex</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-0.5">会话创建后固定，不可切换</p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
                 {/* Execution mode */}
                 <div className="pt-3">
                   <label className="block text-sm font-medium mb-2">

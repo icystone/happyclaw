@@ -5,6 +5,7 @@ export interface GroupInfo {
   folder: string;
   added_at: string;
   interaction_mode: InteractionMode;
+  runtime?: 'claude' | 'codex';
   kind?: 'home' | 'main' | 'feishu' | 'web';
   is_home?: boolean;
   is_my_home?: boolean;
@@ -43,6 +44,7 @@ export interface AdditionalMountInput {
 }
 
 export interface CreateWorkspaceOptions {
+  runtime?: 'claude' | 'codex';
   execution_mode?: 'container' | 'host';
   custom_cwd?: string;
   init_source_path?: string;

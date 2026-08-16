@@ -5,6 +5,7 @@ import { ProviderSwitcher, type SimpleProvider } from './ProviderSwitcher';
 interface GroupStatusCardProps {
   group: {
     jid: string;
+    runtime?: 'claude' | 'codex';
     active: boolean;
     pendingMessages: boolean;
     pendingTasks: number;
@@ -23,9 +24,16 @@ export function GroupStatusCard({ group, providers }: GroupStatusCardProps) {
     <Card>
       <CardContent>
         <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-medium text-foreground truncate mr-2">
-          {group.jid}
-        </span>
+        <div className="min-w-0 mr-2">
+          <span className="text-sm font-medium text-foreground truncate block">
+            {group.jid}
+          </span>
+          {group.runtime && (
+            <span className={`inline-flex mt-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${group.runtime === 'codex' ? 'bg-indigo-100 text-indigo-700' : 'bg-emerald-100 text-emerald-700'}`}>
+              {group.runtime === 'codex' ? 'Codex' : 'Claude'}
+            </span>
+          )}
+        </div>
         {group.active ? (
           <Badge variant="default" className="bg-success-bg text-success hover:bg-success-bg shrink-0">
             运行中

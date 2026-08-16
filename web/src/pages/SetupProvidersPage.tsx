@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, ExternalLink, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
+import { ArrowRight, Check, Cpu, ExternalLink, HardDrive, KeyRound, Loader2, Link2, Plus, Server, ShieldCheck, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,7 @@ import { getErrorMessage } from '../components/settings/types';
 import { useAuthStore } from '../stores/auth';
 
 type ProviderMode = 'official' | 'third_party';
+type RuntimeMode = 'claude' | 'codex';
 
 const RESERVED_ENV_KEYS = new Set([
   'ANTHROPIC_BASE_URL',
@@ -49,6 +50,7 @@ export function SetupProvidersPage() {
   const navigate = useNavigate();
   const { user, setupStatus, checkAuth, initialized } = useAuthStore();
 
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>('claude');
   const [providerMode, setProviderMode] = useState<ProviderMode>('official');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -64,6 +66,25 @@ export function SetupProvidersPage() {
   const [officialToken, setOfficialToken] = useState('');
   const [apiKey, setApiKey] = useState('');
 
+  // Local Claude Code detection
+  const [localCC, setLocalCC] = useState<{
+    detected: boolean;
+    hasCredentials: boolean;
+    expiresAt: number | null;
+    accessTokenMasked: string | null;
+  } | null>(null);
+  const [localCCImporting, setLocalCCImporting] = useState(false);
+  const [localCCImported, setLocalCCImported] = useState(false);
+  const [localCodex, setLocalCodex] = useState<{
+    detected: boolean;
+    hasApiKey: boolean;
+    apiKeyMasked: string | null;
+    baseUrl: string | null;
+    model: string | null;
+  } | null>(null);
+  const [localCodexImporting, setLocalCodexImporting] = useState(false);
+  const [localCodexImported, setLocalCodexImported] = useState(false);
+
   // OAuth flow state
   const [oauthLoading, setOauthLoading] = useState(false);
   const [oauthState, setOauthState] = useState<string | null>(null);
@@ -76,6 +97,9 @@ export function SetupProvidersPage() {
   const [authToken, setAuthToken] = useState('');
   const [model, setModel] = useState('');
   const [customEnvRows, setCustomEnvRows] = useState<EnvRow[]>([]);
+  const [codexBaseUrl, setCodexBaseUrl] = useState('');
+  const [codexApiKey, setCodexApiKey] = useState('');
+  const [codexModel, setCodexModel] = useState('gpt-5.4');
 
   useEffect(() => {
     if (user === null && initialized === true) {
@@ -91,6 +115,22 @@ export function SetupProvidersPage() {
     }
   }, [setupStatus, navigate]);
 
+  // Detect local Claude Code credentials on mount
+  useEffect(() => {
+    api.get<{
+      detected: boolean;
+      hasCredentials: boolean;
+      expiresAt: number | null;
+      accessTokenMasked: string | null;
+    }>('/api/config/claude/detect-local').then(setLocalCC).catch(() => {});
+    api.get<{
+      detected: boolean;
+      hasApiKey: boolean;
+      apiKeyMasked: string | null;
+      baseUrl: string | null;
+      model: string | null;
+    }>('/api/config/codex/detect-local').then(setLocalCodex).catch(() => {});
+  }, []);
   const addCustomEnvRow = () => setCustomEnvRows((rows) => [...rows, { key: '', value: '' }]);
   const removeCustomEnvRow = (idx: number) =>
     setCustomEnvRows((rows) => rows.filter((_, i) => i !== idx));
@@ -99,6 +139,33 @@ export function SetupProvidersPage() {
       rows.map((row, i) => (i === idx ? { ...row, [field]: value } : row)),
     );
 
+  const handleImportLocalCC = async () => {
+    setLocalCCImporting(true);
+    setError(null);
+    try {
+      await api.post('/api/config/claude/import-local');
+      setLocalCCImported(true);
+      setNotice('已导入本机 Claude Code 登录凭据。');
+    } catch (err) {
+      setError(getErrorMessage(err, '导入本机凭据失败'));
+    } finally {
+      setLocalCCImporting(false);
+    }
+  };
+
+  const handleImportLocalCodex = async () => {
+    setLocalCodexImporting(true);
+    setError(null);
+    try {
+      await api.post('/api/config/codex/import-local');
+      setLocalCodexImported(true);
+      setNotice('已导入本机 Codex 配置。');
+    } catch (err) {
+      setError(getErrorMessage(err, '导入本机 Codex 配置失败'));
+    } finally {
+      setLocalCodexImporting(false);
+    }
+  };
 
   const handleOAuthStart = async () => {
     setOauthLoading(true);
@@ -148,7 +215,7 @@ export function SetupProvidersPage() {
     }
 
     let customEnv: Record<string, string> = {};
-    if (providerMode === 'third_party') {
+    if (runtimeMode === 'claude' && providerMode === 'third_party') {
       if (!baseUrl.trim()) {
         setError('第三方渠道必须填写 ANTHROPIC_BASE_URL');
         return;
@@ -163,13 +230,30 @@ export function SetupProvidersPage() {
         return;
       }
       customEnv = envResult.customEnv;
-    } else if (!officialToken.trim() && !apiKey.trim() && !oauthDone) {
-      setError('官方渠道请通过一键登录、填写 API Key 或手动填写 setup-token / .credentials.json');
+    } else if (
+      runtimeMode === 'claude' &&
+      !officialToken.trim() &&
+      !apiKey.trim() &&
+      !oauthDone &&
+      !localCCImported
+    ) {
+      setError('官方渠道请通过一键登录、导入本机凭据或手动填写 setup-token / .credentials.json');
+      return;
+    } else if (
+      runtimeMode === 'codex' &&
+      !codexApiKey.trim() &&
+      !localCodexImported
+    ) {
+      setError('Codex 请填写 API Key 或导入本机配置');
       return;
     }
 
     setSaving(true);
     try {
+      await api.put('/api/config/runtime-default', {
+        defaultRuntime: runtimeMode,
+      });
+
       // Feishu is optional. Only save when user entered anything.
       if (feishuAppId.trim() || feishuAppSecret.trim()) {
         const payload: Record<string, string> = { appId: feishuAppId.trim() };
@@ -177,11 +261,20 @@ export function SetupProvidersPage() {
         await api.put('/api/config/user-im/feishu', payload);
       }
 
-      if (providerMode === 'official') {
-        if (oauthDone) {
-          // OAuth already created the provider via callback — nothing to do
+      if (runtimeMode === 'codex') {
+        if (!localCodexImported) {
+          await api.put('/api/config/codex', {
+            baseUrl: codexBaseUrl.trim(),
+            model: codexModel.trim(),
+          });
+          await api.put('/api/config/codex/secrets', {
+            apiKey: codexApiKey.trim(),
+          });
+        }
+      } else if (providerMode === 'official') {
+        if (oauthDone || localCCImported) {
+          // OAuth or local import already saved the provider/credentials.
         } else if (apiKey.trim()) {
-          // API Key mode — create official provider
           await api.post('/api/config/claude/providers', {
             name: '官方 Claude (API Key)',
             type: 'official',
@@ -262,7 +355,7 @@ export function SetupProvidersPage() {
         <div className="text-center">
           <p className="text-xs font-semibold text-primary tracking-wider mb-2">STEP 2 / 2</p>
           <h1 className="text-2xl font-bold text-foreground mb-2">系统接入初始化</h1>
-          <p className="text-sm text-muted-foreground">此页面保存的是系统全局默认配置。完成后才进入正式后台。</p>
+          <p className="text-sm text-muted-foreground">先配置一个默认 runtime。Claude 和 Codex 后续都可在设置页继续管理。</p>
         </div>
 
         {error && (
@@ -302,6 +395,42 @@ export function SetupProvidersPage() {
 
         <section className="bg-card rounded-xl border border-border shadow-sm p-5">
           <div className="flex items-center gap-2 mb-3">
+            <Cpu className="w-4 h-4 text-primary" />
+            <h2 className="text-base font-semibold text-foreground">选择默认 Runtime</h2>
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setRuntimeMode('claude')}
+              className={`rounded-lg border p-4 text-left transition-colors cursor-pointer ${
+                runtimeMode === 'claude' ? 'border-primary bg-primary/5' : 'border-border hover:bg-accent/40'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <ShieldCheck className="w-4 h-4" />
+                Claude Code
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">支持 OAuth、setup-token 和本机 Claude 登录导入。</p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setRuntimeMode('codex')}
+              className={`rounded-lg border p-4 text-left transition-colors cursor-pointer ${
+                runtimeMode === 'codex' ? 'border-primary bg-primary/5' : 'border-border hover:bg-accent/40'
+              }`}
+            >
+              <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                <Cpu className="w-4 h-4" />
+                Codex
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">支持 API Key 和本机 `~/.codex` 配置导入。</p>
+            </button>
+          </div>
+        </section>
+
+        {runtimeMode === 'claude' ? (
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-3">
             <KeyRound className="w-4 h-4 text-primary" />
             <h2 className="text-base font-semibold text-foreground">Claude Code 配置（二选一）</h2>
           </div>
@@ -329,6 +458,39 @@ export function SetupProvidersPage() {
 
           {providerMode === 'official' ? (
             <div className="space-y-4">
+              {localCC?.detected && (
+                <div className={`rounded-lg border p-4 space-y-3 ${
+                  localCCImported
+                    ? 'border-emerald-200 bg-emerald-50/50'
+                    : 'border-blue-200 bg-blue-50/50'
+                }`}>
+                  <div className="flex items-center gap-2">
+                    <HardDrive className="w-4 h-4 text-blue-600" />
+                    <div className="text-sm font-medium text-slate-800">
+                      检测到本机已登录 Claude Code
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-600">
+                    Access Token：{localCC.accessTokenMasked || '未检测到'}；过期时间：
+                    {localCC.expiresAt ? new Date(localCC.expiresAt).toLocaleString('zh-CN') : '未知'}
+                  </div>
+                  {localCCImported ? (
+                    <div className="flex items-center gap-1.5 text-sm text-emerald-700">
+                      <Check className="w-4 h-4" />
+                      已导入，点击下方按钮完成配置。
+                    </div>
+                  ) : (
+                    <Button
+                      onClick={handleImportLocalCC}
+                      disabled={localCCImporting || saving || !localCC.hasCredentials}
+                    >
+                      {localCCImporting ? <Loader2 className="size-4 animate-spin" /> : <HardDrive className="size-4" />}
+                      导入本机 Claude 凭据
+                    </Button>
+                  )}
+                </div>
+              )}
+
               {/* Official auth tabs */}
               <div className="inline-flex rounded-lg border border-border p-1 bg-muted">
                 <button
@@ -570,6 +732,72 @@ export function SetupProvidersPage() {
             </div>
           )}
         </section>
+        ) : (
+        <section className="bg-card rounded-xl border border-border shadow-sm p-5">
+          <div className="flex items-center gap-2 mb-3">
+            <Cpu className="w-4 h-4 text-primary" />
+            <h2 className="text-base font-semibold text-foreground">Codex 配置</h2>
+          </div>
+          <div className="space-y-4">
+            {localCodex?.detected && (
+              <div className={`rounded-lg border p-4 space-y-3 ${
+                localCodexImported
+                  ? 'border-emerald-200 bg-emerald-50/50'
+                  : 'border-blue-200 bg-blue-50/50'
+              }`}>
+                <div className="flex items-center gap-2">
+                  <HardDrive className="w-4 h-4 text-blue-600" />
+                  <div className="text-sm font-medium text-slate-800">
+                    检测到本机 Codex 配置
+                  </div>
+                </div>
+                <div className="text-xs text-slate-600">
+                  API Key：{localCodex.apiKeyMasked || '未检测到'}；Base URL：{localCodex.baseUrl || '默认'}；Model：{localCodex.model || '默认'}
+                </div>
+                {localCodexImported ? (
+                  <div className="flex items-center gap-1.5 text-sm text-emerald-700">
+                    <Check className="w-4 h-4" />
+                    已导入，点击下方按钮完成配置。
+                  </div>
+                ) : (
+                  <Button onClick={handleImportLocalCodex} disabled={localCodexImporting || saving || !localCodex.hasApiKey}>
+                    {localCodexImporting ? <Loader2 className="size-4 animate-spin" /> : <HardDrive className="size-4" />}
+                    导入本机 Codex 配置
+                  </Button>
+                )}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">Base URL（可选）</label>
+              <Input
+                type="text"
+                value={codexBaseUrl}
+                onChange={(e) => setCodexBaseUrl(e.target.value)}
+                placeholder="留空表示使用 OpenAI 默认地址"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">Model（可选）</label>
+              <Input
+                type="text"
+                value={codexModel}
+                onChange={(e) => setCodexModel(e.target.value)}
+                placeholder="例如 gpt-5.4"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-foreground mb-1">OPENAI_API_KEY</label>
+              <Input
+                type="password"
+                value={codexApiKey}
+                onChange={(e) => setCodexApiKey(e.target.value)}
+                placeholder="输入 Codex API Key"
+              />
+            </div>
+          </div>
+        </section>
+        )}
 
         <div className="bg-card rounded-xl border border-border shadow-sm p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
           <div className="text-sm text-muted-foreground flex items-start gap-2">

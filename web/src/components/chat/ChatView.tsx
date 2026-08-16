@@ -995,6 +995,18 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
                   </span>
                 </>
               )}
+              {group.runtime && (
+                <>
+                  <span className="hidden shrink-0 text-muted-foreground/40 sm:inline">
+                    ·
+                  </span>
+                  <span
+                    className={`hidden shrink-0 items-center rounded-full border px-2.5 py-0.5 text-[10px] font-medium sm:inline-flex ${group.runtime === 'codex' ? 'bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/30 dark:text-indigo-300 dark:border-indigo-800' : 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/30 dark:text-emerald-300 dark:border-emerald-800'}`}
+                  >
+                    {group.runtime === 'codex' ? 'Codex' : 'Claude'}
+                  </span>
+                </>
+              )}
               <span className="shrink-0 text-muted-foreground/40">·</span>
               <span
                 className={cn(
@@ -1372,8 +1384,8 @@ export function ChatView({ groupJid, onBack, headerLeft }: ChatViewProps) {
         title="清除上下文"
         message={
           resetAgentId
-            ? '将清除该子对话的 Claude 会话上下文，下次发送消息时将开始全新会话。聊天记录不受影响。'
-            : '将清除当前对话的 Claude 上下文并停止运行中的智能体进程，下次发送消息时将开始全新会话。聊天记录和其他对话不受影响。'
+            ? '将清除该子对话的运行时会话上下文，下次发送消息时将开始全新会话。聊天记录不受影响。'
+            : '将清除当前对话的运行时上下文并停止运行中的智能体进程，下次发送消息时将开始全新会话。聊天记录和其他对话不受影响。'
         }
         confirmText="清除"
         confirmVariant="danger"

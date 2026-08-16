@@ -13,6 +13,7 @@ export interface ChatGroupItemProps {
   name: string;
   folder: string;
   lastMessage?: string;
+  runtime?: 'claude' | 'codex';
 
   isActive: boolean;
   isHome: boolean;
@@ -31,6 +32,7 @@ export function ChatGroupItem({
   jid,
   name,
   folder,
+  runtime,
   isActive,
   isHome,
   isPinned,
@@ -65,6 +67,11 @@ export function ChatGroupItem({
         <span className="min-w-0 flex-1 truncate text-[14px] font-normal leading-5">
           {displayName}
         </span>
+        {runtime === 'codex' && (
+          <span className="ml-1.5 shrink-0 inline-flex items-center rounded px-1 py-0.5 text-[10px] font-medium bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300">
+            Codex
+          </span>
+        )}
         {isPinned && !isHome && (
           <span className="ml-1 shrink-0 text-[10px] text-muted-foreground">
             固定

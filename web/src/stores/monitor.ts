@@ -17,10 +17,12 @@ export interface SystemStatus {
     container: string | null;
     latest: string | null;
   } | null;
+  codexVersion?: string | null;
   dockerPullLogs?: string[];
   dockerPullResult?: { success: boolean; error?: string } | null;
   groups: Array<{
     jid: string;
+    runtime?: 'claude' | 'codex';
     active: boolean;
     pendingMessages: boolean;
     pendingTasks: number;

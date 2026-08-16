@@ -321,6 +321,9 @@ export function MonitorPage() {
                             账号
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
+                            Runtime
+                          </th>
+                          <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
                             队列
                           </th>
                           <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase">
@@ -342,6 +345,13 @@ export function MonitorPage() {
                             </td>
                             <td className="px-4 py-3 text-sm text-muted-foreground">
                               {group.ownerUsername || '-'}
+                            </td>
+                            <td className="px-4 py-3 text-sm">
+                              <span
+                                className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${group.runtime === 'codex' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300'}`}
+                              >
+                                {group.runtime === 'codex' ? 'Codex' : 'Claude'}
+                              </span>
                             </td>
                             <td className="px-4 py-3 text-sm text-muted-foreground">
                               {group.pendingTasks} 个任务 /{' '}
